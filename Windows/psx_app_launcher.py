@@ -1,19 +1,17 @@
 #!/usr/bin/env python3
 """
-PSX App Launcher
+PSX App Launcher for Windows
 Version 1.1
 
 Compact frameless launcher for Aerowinx PSX and related applications.
-Launches configured application paths only; no command-line execution.
+Launches configured application paths only; no arbitrary command execution.
 """
 
 from __future__ import annotations
 
 import configparser
-from functools import lru_cache
+import json
 import os
-import platform
-import plistlib
 import subprocess
 import sys
 import time
@@ -35,13 +33,8 @@ GREEN = "#54c878"
 ORANGE = "#e7a84b"
 RED = "#df6464"
 
-# Default/generic identifiers are reused by many Python/PyInstaller apps and
-# therefore cannot identify one specific configured application.
-GENERIC_MAC_BUNDLE_IDS = {
-    "org.pythonmac.unspecified",
-    "org.python.python",
-    "com.apple.ScriptEditor.id",
-}
+CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+CREATE_NEW_CONSOLE = getattr(subprocess, "CREATE_NEW_CONSOLE", 0x00000010)
 
 
 def app_dir() -> Path:
@@ -64,53 +57,8 @@ DEFAULT_CONFIG = {
         "enabled": "true",
         "hidden1": "false",
         "hidden2": "false",
-        "path1": "/Applications/Aerowinx.app",
-        "detect1": "-jar Aerowinx.jar",
-        "path2": "",
-        "detect2": "",
-    },
-    "SimLink": {
-        "enabled": "true",
-        "hidden1": "false",
-        "hidden2": "false",
-        "path1": "/Applications/Simlink.app",
-        "detect1": "",
-        "path2": "/Applications/PSX SimLink Bridge.app",
-        "detect2": "",
-    },
-    "Volanta": {
-        "enabled": "true",
-        "hidden1": "false",
-        "hidden2": "false",
-        "path1": "/Applications/Volanta.app",
-        "detect1": "",
-        "path2": "/Applications/PSX Volanta Bridge.app",
-        "detect2": "",
-    },
-    "xPilot": {
-        "enabled": "true",
-        "hidden1": "false",
-        "hidden2": "false",
-        "path1": "/Applications/xPilot.app",
-        "detect1": "",
-        "path2": "/Applications/PSX xPilot Bridge.app",
-        "detect2": "",
-    },
-    "PFPx": {
-        "enabled": "true",
-        "hidden1": "false",
-        "hidden2": "false",
-        "path1": "/Applications/Aerowinx PFPx GUI.app",
-        "detect1": "",
-        "path2": "",
-        "detect2": "",
-    },
-    "GPS": {
-        "enabled": "true",
-        "hidden1": "false",
-        "hidden2": "false",
-        "path1": "/Applications/PSX GPS Interference.app",
-        "detect1": "",
+        "path1": r"C:\Aerowinx\AerowinxStart.jar",
+        "detect1": "Aerowinx.jar",
         "path2": "",
         "detect2": "",
     },
@@ -124,23 +72,42 @@ class LauncherItem:
     paths: list[tuple[Path, bool, str]]
 
 
+@dataclass
+class WindowsProcess:
+    pid: int
+    name: str
+    executable_path: str
+    command_line: str
+
+
 class LaunchError(RuntimeError):
     pass
 
 
-def _safe_getboolean(config: configparser.ConfigParser, section: str, option: str, fallback: bool) -> bool:
+def _safe_getboolean(
+    config: configparser.ConfigParser,
+    section: str,
+    option: str,
+    fallback: bool,
+) -> bool:
     try:
         return config.getboolean(section, option, fallback=fallback)
     except (ValueError, configparser.Error):
         return fallback
 
 
-def ensure_config() -> configparser.ConfigParser:
-    config = configparser.ConfigParser()
+def _new_config_parser() -> configparser.ConfigParser:
+    # Disable interpolation so Windows values containing %NAME% remain valid.
+    config = configparser.ConfigParser(interpolation=None)
     config.optionxform = str
+    return config
 
-    # The launcher only creates the INI when it does not exist. An existing
-    # configuration is read exactly as-is and is never rewritten or migrated.
+
+def ensure_config() -> configparser.ConfigParser:
+    config = _new_config_parser()
+
+    # Only create an INI when none exists. Existing INI files are never
+    # rewritten, migrated, normalized or supplemented automatically.
     if not CONFIG_PATH.exists():
         for section, values in DEFAULT_CONFIG.items():
             config[section] = values
@@ -148,18 +115,15 @@ def ensure_config() -> configparser.ConfigParser:
             with CONFIG_PATH.open("x", encoding="utf-8") as handle:
                 config.write(handle)
         except FileExistsError:
-            # Another instance may have created it between the existence check
-            # and opening the file. Fall through and read that file unchanged.
             pass
         except OSError as exc:
             raise RuntimeError(
                 f"Kan configuratie niet aanmaken:\n{CONFIG_PATH}\n\n{exc}"
             ) from exc
 
-    config.clear()
-    config.optionxform = str
+    config = _new_config_parser()
     try:
-        with CONFIG_PATH.open("r", encoding="utf-8") as handle:
+        with CONFIG_PATH.open("r", encoding="utf-8-sig") as handle:
             config.read_file(handle)
     except (OSError, UnicodeError, configparser.Error) as exc:
         raise RuntimeError(f"Kan configuratie niet lezen:\n{CONFIG_PATH}\n\n{exc}") from exc
@@ -170,10 +134,8 @@ def ensure_config() -> configparser.ConfigParser:
 def configured_items(config: configparser.ConfigParser) -> list[LauncherItem]:
     items: list[LauncherItem] = []
 
-    # ConfigParser preserves INI section insertion order. Every section except
-    # [Launcher] becomes a button in exactly that order.
     for section in config.sections():
-        if section == "Launcher":
+        if section.lower() == "launcher":
             continue
         if not _safe_getboolean(config, section, "enabled", True):
             continue
@@ -183,14 +145,16 @@ def configured_items(config: configparser.ConfigParser) -> list[LauncherItem]:
 
         for index, key in enumerate(("path1", "path2"), start=1):
             try:
-                value = config.get(section, key, fallback="").strip()
-                if value:
-                    expanded = os.path.expandvars(os.path.expanduser(value))
-                    hidden = _safe_getboolean(config, section, f"hidden{index}", False)
-                    detection = config.get(section, f"detect{index}", fallback="").strip()
-                    paths.append((Path(expanded), hidden, detection))
+                value = config.get(section, key, fallback="").strip().strip('"')
+                if not value:
+                    continue
+                expanded = os.path.expandvars(os.path.expanduser(value))
+                hidden = _safe_getboolean(config, section, f"hidden{index}", False)
+                detection = config.get(
+                    section, f"detect{index}", fallback=""
+                ).strip()
+                paths.append((Path(expanded), hidden, detection))
             except Exception:
-                # A malformed single value must never prevent the launcher opening.
                 continue
 
         items.append(LauncherItem(section, label, paths))
@@ -198,367 +162,211 @@ def configured_items(config: configparser.ConfigParser) -> list[LauncherItem]:
     return items
 
 
+def _powershell_executable() -> str:
+    system_root = os.environ.get("SystemRoot", r"C:\Windows")
+    preferred = Path(system_root) / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"
+    return str(preferred) if preferred.exists() else "powershell.exe"
+
+
+_PROCESS_CACHE: tuple[float, list[WindowsProcess]] = (0.0, [])
+
+
+def windows_processes(force: bool = False) -> list[WindowsProcess]:
+    """Read Windows processes using CIM, including path and command line."""
+    global _PROCESS_CACHE
+
+    now = time.monotonic()
+    cached_at, cached = _PROCESS_CACHE
+    if not force and now - cached_at < 0.75:
+        return cached
+
+    script = (
+        "$ErrorActionPreference='SilentlyContinue';"
+        "Get-CimInstance Win32_Process | "
+        "Select-Object ProcessId,Name,ExecutablePath,CommandLine | "
+        "ConvertTo-Json -Compress"
+    )
+
+    try:
+        result = subprocess.run(
+            [
+                _powershell_executable(),
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                script,
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=5,
+            creationflags=CREATE_NO_WINDOW,
+        )
+        if result.returncode != 0 or not result.stdout.strip():
+            _PROCESS_CACHE = (now, [])
+            return []
+
+        raw = json.loads(result.stdout)
+        if isinstance(raw, dict):
+            raw = [raw]
+
+        processes: list[WindowsProcess] = []
+        for entry in raw if isinstance(raw, list) else []:
+            try:
+                processes.append(
+                    WindowsProcess(
+                        pid=int(entry.get("ProcessId", 0)),
+                        name=str(entry.get("Name") or ""),
+                        executable_path=str(entry.get("ExecutablePath") or ""),
+                        command_line=str(entry.get("CommandLine") or ""),
+                    )
+                )
+            except (TypeError, ValueError, AttributeError):
+                continue
+
+        _PROCESS_CACHE = (now, processes)
+        return processes
+    except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
+        _PROCESS_CACHE = (now, [])
+        return []
+
+
+def _normalized_windows_path(path: Path | str) -> str:
+    try:
+        text = str(Path(path).resolve())
+    except OSError:
+        text = os.path.abspath(str(path))
+    return os.path.normcase(os.path.normpath(text))
+
+
+def _contains_casefold(haystack: str, needle: str) -> bool:
+    return needle.casefold() in haystack.casefold()
+
+
+def matching_processes(path: Path, detection: str = "") -> list[WindowsProcess]:
+    processes = windows_processes()
+
+    if detection:
+        return [
+            process
+            for process in processes
+            if _contains_casefold(process.command_line, detection)
+        ]
+
+    target = _normalized_windows_path(path)
+    suffix = path.suffix.lower()
+
+    if suffix == ".exe":
+        exact = [
+            process
+            for process in processes
+            if process.executable_path
+            and _normalized_windows_path(process.executable_path) == target
+        ]
+        if exact:
+            return exact
+
+        # ExecutablePath may be unavailable for elevated processes. Fall back to
+        # the exact executable filename, never a substring search.
+        return [
+            process
+            for process in processes
+            if process.name.casefold() == path.name.casefold()
+        ]
+
+    # Scripts, JAR files and shortcuts normally run under another host process.
+    # Match the complete configured path in that host's command line.
+    matches = []
+    for process in processes:
+        command = process.command_line
+        if not command:
+            continue
+        normalized_command = os.path.normcase(command.replace("/", "\\"))
+        if target in normalized_command:
+            matches.append(process)
+    return matches
+
+
+def is_probably_running_path(path: Path, detection: str = "") -> bool:
+    if not detection and not path.exists():
+        return False
+    return bool(matching_processes(path, detection))
+
+
 def launch_path(path: Path, hidden: bool = False) -> None:
     if not path.exists():
         raise LaunchError(f"Niet gevonden:\n{path}")
 
-    system = platform.system()
+    suffix = path.suffix.lower()
+    creationflags = CREATE_NO_WINDOW if hidden else 0
+
     try:
-        if system == "Darwin":
-            if path.suffix.lower() == ".app":
+        if suffix == ".exe":
+            if hidden:
                 subprocess.Popen(
-                    ["open", str(path)],
+                    [str(path)],
+                    cwd=str(path.parent),
+                    stdin=subprocess.DEVNULL,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
+                    creationflags=creationflags,
                 )
             else:
-                if not os.access(path, os.X_OK):
-                    raise LaunchError(f"Bestand is niet uitvoerbaar:\n{path}")
-                if hidden:
-                    subprocess.Popen(
-                        [str(path)],
-                        cwd=str(path.parent),
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                        start_new_session=True,
-                    )
-                else:
-                    # LaunchServices behaves like opening the executable in Finder
-                    # and gives it its normal visible Terminal window.
-                    subprocess.Popen(
-                        ["open", str(path)],
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                    )
-        elif system == "Windows":
-            os.startfile(str(path))  # type: ignore[attr-defined]
-        else:
+                os.startfile(str(path))  # type: ignore[attr-defined]
+            return
+
+        if suffix in {".bat", ".cmd"}:
             subprocess.Popen(
-                [str(path)],
+                [os.environ.get("COMSPEC", "cmd.exe"), "/d", "/c", str(path)],
                 cwd=str(path.parent),
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL if hidden else None,
+                stderr=subprocess.DEVNULL if hidden else None,
+                creationflags=CREATE_NO_WINDOW if hidden else CREATE_NEW_CONSOLE,
             )
+            return
+
+        if suffix == ".jar":
+            java = "javaw.exe" if hidden else "java.exe"
+            subprocess.Popen(
+                [java, "-jar", str(path)],
+                cwd=str(path.parent),
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL if hidden else None,
+                stderr=subprocess.DEVNULL if hidden else None,
+                creationflags=CREATE_NO_WINDOW if hidden else CREATE_NEW_CONSOLE,
+            )
+            return
+
+        # Shortcuts, documents and other registered file types are opened using
+        # their normal Windows file association.
+        os.startfile(str(path))  # type: ignore[attr-defined]
     except OSError as exc:
         raise LaunchError(f"Kan niet starten:\n{path}\n\n{exc}") from exc
 
 
+def quit_path(path: Path, detection: str = "") -> None:
+    """Terminate only PIDs matching this exact path or custom detection text."""
+    matches = matching_processes(path, detection)
+    own_pid = os.getpid()
 
-@lru_cache(maxsize=64)
-def _mac_app_contains_aerowinx_jar(app_path_text: str) -> bool:
-    """Return True only for an app bundle that actually contains Aerowinx.jar.
-
-    This intentionally does not use the INI section name, button label or the
-    position of the button. The configured bundle itself determines whether the
-    special long-lived Java-process fallback is applicable.
-    """
-    app_path = Path(app_path_text)
-    if app_path.suffix.lower() != ".app" or not app_path.is_dir():
-        return False
-
-    contents = app_path / "Contents"
-    if not contents.is_dir():
-        return False
-
-    # Aerowinx launchers may place the JAR in different subfolders. Search the
-    # bundle once and cache the result; this is not repeated on every 5 s poll.
-    try:
-        return any(candidate.is_file() for candidate in contents.rglob("Aerowinx.jar"))
-    except OSError:
-        return False
-
-
-def mac_app_info(path: Path) -> tuple[str, str, Path | None]:
-    """Return bundle identifier, executable name and executable path."""
-    if path.suffix.lower() != ".app":
-        return "", path.name, path
-
-    info_plist = path / "Contents" / "Info.plist"
-    bundle_id = ""
-    executable = path.stem.strip()
-    try:
-        with info_plist.open("rb") as handle:
-            info = plistlib.load(handle)
-        bundle_id = str(info.get("CFBundleIdentifier", "")).strip()
-        executable = str(info.get("CFBundleExecutable", executable)).strip() or executable
-    except (OSError, ValueError, plistlib.InvalidFileException):
-        pass
-
-    executable_path = path / "Contents" / "MacOS" / executable if executable else None
-    return bundle_id, executable, executable_path
-
-
-def _mac_bundle_is_running(bundle_id: str, require_visible: bool = False) -> bool:
-    normalized = bundle_id.strip().lower()
-    if not normalized or normalized in GENERIC_MAC_BUNDLE_IDS:
-        return False
-    # System Events identifies the actual app process by bundle identifier. This
-    # remains reliable for Java/PyInstaller apps whose Unix process name may vary.
-    escaped = bundle_id.replace('\\', '\\\\').replace('"', '\\"')
-    if require_visible:
-        script = (
-            'tell application "System Events" to '
-            f'return exists (first application process whose bundle identifier is "{escaped}" and visible is true)'
-        )
-    else:
-        script = (
-            'tell application "System Events" to '
-            f'return exists (first application process whose bundle identifier is "{escaped}")'
-        )
-    try:
-        result = subprocess.run(
-            ["osascript", "-e", script],
-            capture_output=True,
-            text=True,
-            timeout=2,
-        )
-        return result.returncode == 0 and result.stdout.strip().lower() == "true"
-    except (OSError, subprocess.SubprocessError):
-        return False
-
-
-def _mac_loose_executable_is_running(path: Path) -> bool:
-    """Match a non-.app executable only by its exact argv[0] path."""
-    try:
-        target = str(path.resolve())
-    except OSError:
-        target = str(path.absolute())
-
-    try:
-        result = subprocess.run(
-            ["ps", "-axo", "command="],
-            capture_output=True,
-            text=True,
-            timeout=2,
-        )
-        if result.returncode != 0:
-            return False
-        for line in result.stdout.splitlines():
-            command = line.strip()
-            if command == target or command.startswith(target + " "):
-                return True
-    except (OSError, subprocess.SubprocessError):
-        pass
-    return False
-
-
-def _mac_executable_is_running(app_path: Path, executable: str, executable_path: Path | None) -> bool:
-    try:
-        # First compare against the full command line. This avoids collisions
-        # between similarly named apps and catches wrapper-launched processes.
-        result = subprocess.run(
-            ["ps", "-axo", "command="],
-            capture_output=True,
-            text=True,
-            timeout=2,
-        )
-        if result.returncode == 0:
-            executable_target = str(executable_path) if executable_path else ""
-            bundle_target = str(app_path) if app_path.suffix.lower() == ".app" else ""
-            app_name = app_path.stem.strip().lower()
-
-            for line in result.stdout.splitlines():
-                command = line.strip()
-                command_lower = command.lower()
-
-                # Native apps normally keep their executable path as argv[0].
-                if executable_target and (
-                    command == executable_target
-                    or command.startswith(executable_target + " ")
-                    or executable_target in command
-                ):
-                    return True
-
-                # Java/PyInstaller wrapper apps may exit after spawning their real
-                # process. The spawned command commonly still contains a JAR,
-                # resource, working path or argument inside the original bundle.
-                if bundle_target and bundle_target in command:
-                    return True
-
-                # Aerowinx PSX can continue as a plain Java process after
-                # its macOS wrapper has exited. Apply this fallback only when the
-                # configured .app bundle actually contains Aerowinx.jar. This
-                # prevents similarly named apps such as Aerowinx PFPx GUI.app
-                # from becoming green when PSX is running.
-                if _mac_app_contains_aerowinx_jar(str(app_path)):
-                    if "java" in command_lower and "aerowinx.jar" in command_lower:
-                        return True
-
-        if executable:
-            result = subprocess.run(
-                ["pgrep", "-x", executable],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                timeout=1,
-            )
-            return result.returncode == 0
-    except (OSError, subprocess.SubprocessError):
-        pass
-    return False
-
-
-def _process_command_contains(text: str) -> bool:
-    """Return True when a running process command line contains literal text."""
-    if not text:
-        return False
-    try:
-        if platform.system() == "Windows":
-            result = subprocess.run(
-                ["wmic", "process", "get", "CommandLine"],
-                capture_output=True,
-                text=True,
-                timeout=3,
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-            )
-        else:
-            result = subprocess.run(
-                ["ps", "-axo", "command="],
-                capture_output=True,
-                text=True,
-                timeout=2,
-            )
-        if result.returncode != 0:
-            return False
-        return any(text in line for line in result.stdout.splitlines())
-    except (OSError, subprocess.SubprocessError):
-        return False
-
-
-def is_probably_running_path(path: Path, detection: str = "") -> bool:
-    """Best-effort process check, optionally using literal INI detection text."""
-    if detection:
-        return _process_command_contains(detection)
-
-    if not path.exists():
-        return False
-
-    system = platform.system()
-    try:
-        if system == "Darwin":
-            # Loose executables have no bundle identifier. Never fall back to a
-            # process-name match, because that can mistake another process with
-            # the same filename for this configured executable.
-            if path.suffix.lower() != ".app":
-                return _mac_loose_executable_is_running(path)
-
-            bundle_id, executable, executable_path = mac_app_info(path)
-
-            # Volanta can leave updater/helper processes alive after its main UI
-            # has been closed. Count Volanta itself only while the real app
-            # process is visible; path2 (the Aerowinx bridge) is checked
-            # independently as its own application.
-            if path.stem.strip().lower() == "volanta":
-                return _mac_bundle_is_running(bundle_id, require_visible=True)
-
-            if _mac_bundle_is_running(bundle_id):
-                return True
-            return _mac_executable_is_running(path, executable, executable_path)
-
-        name = path.stem.strip()
-        if not name:
-            return False
-
-        if system == "Windows":
-            result = subprocess.run(
-                ["tasklist"],
-                capture_output=True,
-                text=True,
-                timeout=2,
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-            )
-            return path.name.lower() in result.stdout.lower() or name.lower() in result.stdout.lower()
-
-        result = subprocess.run(
-            ["pgrep", "-x", name],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            timeout=1,
-        )
-        return result.returncode == 0
-    except (OSError, subprocess.SubprocessError):
-        return False
-
-
-def _mac_exact_pids(path: Path) -> list[int]:
-    """Return PIDs whose command line starts with the exact configured path."""
-    try:
-        target = str(path.resolve())
-    except OSError:
-        target = str(path.absolute())
-    pids: list[int] = []
-    try:
-        result = subprocess.run(
-            ["ps", "-axo", "pid=,command="],
-            capture_output=True,
-            text=True,
-            timeout=2,
-        )
-        if result.returncode == 0:
-            for line in result.stdout.splitlines():
-                stripped = line.strip()
-                if not stripped:
-                    continue
-                pid_text, _, command = stripped.partition(" ")
-                command = command.strip()
-                if command == target or command.startswith(target + " "):
-                    try:
-                        pids.append(int(pid_text))
-                    except ValueError:
-                        pass
-    except (OSError, subprocess.SubprocessError):
-        pass
-    return pids
-
-
-def quit_path(path: Path) -> None:
-    """Quit exactly the configured app or executable without broad name kills."""
-    if not path.exists():
-        return
-
-    system = platform.system()
-    if system == "Darwin":
-        if path.suffix.lower() == ".app":
-            bundle_id, executable, executable_path = mac_app_info(path)
-            if bundle_id and bundle_id.lower() not in GENERIC_MAC_BUNDLE_IDS:
-                escaped = bundle_id.replace('\\', '\\\\').replace('"', '\\"')
-                script = (
-                    'tell application "System Events" to '
-                    f'tell (first application process whose bundle identifier is "{escaped}") to quit'
-                )
-                subprocess.run(
-                    ["osascript", "-e", script],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    timeout=3,
-                )
-            else:
-                for pid in _mac_exact_pids(executable_path or path):
-                    try:
-                        os.kill(pid, 15)
-                    except (OSError, ProcessLookupError):
-                        pass
-        else:
-            for pid in _mac_exact_pids(path):
-                try:
-                    os.kill(pid, 15)
-                except (OSError, ProcessLookupError):
-                    pass
-        return
-
-    if system == "Windows":
+    for process in matches:
+        if process.pid <= 0 or process.pid == own_pid:
+            continue
         subprocess.run(
-            ["taskkill", "/IM", path.name, "/T"],
+            ["taskkill.exe", "/PID", str(process.pid), "/T"],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            timeout=4,
+            creationflags=CREATE_NO_WINDOW,
         )
-        return
 
-    for pid in _mac_exact_pids(path):
-        try:
-            os.kill(pid, 15)
-        except (OSError, ProcessLookupError):
-            pass
+    # Prevent a stale cached process list from keeping the status green.
+    windows_processes(force=True)
 
 
 class UtilityButton(tk.Frame):
@@ -578,7 +386,7 @@ class UtilityButton(tk.Frame):
             text=item.label,
             bg=PANEL,
             fg=TEXT,
-            font=("Helvetica Neue", 10, "normal"),
+            font=("Segoe UI", 9),
             padx=0,
             pady=0,
             anchor="center",
@@ -587,16 +395,11 @@ class UtilityButton(tk.Frame):
 
         for widget in (self, self.dot, self.label):
             widget.bind("<Button-1>", self._clicked)
-            widget.bind("<Button-2>", self._menu_clicked)
             widget.bind("<Button-3>", self._menu_clicked)
-            widget.bind("<Control-Button-1>", self._menu_clicked)
             widget.bind("<Enter>", self._enter)
             widget.bind("<Leave>", self._leave)
 
-    def _clicked(self, event=None) -> None:
-        if event is not None and (event.state & 0x0004):
-            self._menu_clicked(event)
-            return
+    def _clicked(self, _event=None) -> None:
         self.command(self.item)
 
     def _menu_clicked(self, event=None) -> str:
@@ -671,40 +474,56 @@ class PSXLauncher(tk.Tk):
             text="⋯",
             bg=BG,
             fg=MUTED,
-            font=("Helvetica Neue", 12),
+            font=("Segoe UI", 11),
             cursor="hand2",
             padx=5,
         )
         self.settings.grid(row=0, column=len(self.items), padx=(2, 0), sticky="ns")
         self.settings.bind("<Button-1>", self.show_settings_menu)
-        self.settings.bind("<Button-2>", self.show_settings_menu)
         self.settings.bind("<Button-3>", self.show_settings_menu)
-        self.settings.bind("<Control-Button-1>", self.show_settings_menu)
         self.settings.bind("<Enter>", lambda _event: self.settings.configure(fg=TEXT))
         self.settings.bind("<Leave>", lambda _event: self.settings.configure(fg=MUTED))
 
         self.item_menus: dict[str, tk.Menu] = {}
         for item in self.items:
             menu = tk.Menu(self, tearoff=0)
-            menu.add_command(label="Quit apps", command=lambda current=item: self._run_menu_action(lambda: self.quit_item(current)))
+            menu.add_command(
+                label="Quit apps",
+                command=lambda current=item: self._run_menu_action(
+                    lambda: self.quit_item(current)
+                ),
+            )
             self.item_menus[item.section] = menu
 
         self.settings_menu = tk.Menu(self, tearoff=0)
-        self.settings_menu.add_command(label="Edit INI", command=lambda: self._run_menu_action(self.open_config))
-        self.settings_menu.add_command(label=f"About ({APP_VERSION})", command=lambda: self._run_menu_action(self.show_about))
+        self.settings_menu.add_command(
+            label="Edit INI",
+            command=lambda: self._run_menu_action(self.open_config),
+        )
+        self.settings_menu.add_command(
+            label=f"About ({APP_VERSION})",
+            command=lambda: self._run_menu_action(self.show_about),
+        )
         self.settings_menu.add_separator()
-        self.settings_menu.add_command(label="Quit", command=lambda: self._run_menu_action(self.request_close))
+        self.settings_menu.add_command(
+            label="Quit",
+            command=lambda: self._run_menu_action(self.request_close),
+        )
 
         self.mini = tk.Frame(self.shell, bg=PANEL, cursor="hand2")
-        self.mini_dot = tk.Canvas(self.mini, width=10, height=10, bg=PANEL, highlightthickness=0, bd=0)
-        self.mini_dot_id = self.mini_dot.create_oval(1, 1, 9, 9, fill=OFF_DOT, outline="")
+        self.mini_dot = tk.Canvas(
+            self.mini, width=10, height=10, bg=PANEL, highlightthickness=0, bd=0
+        )
+        self.mini_dot_id = self.mini_dot.create_oval(
+            1, 1, 9, 9, fill=OFF_DOT, outline=""
+        )
         self.mini_dot.pack(side="left", padx=(9, 5), pady=7)
         self.mini_label = tk.Label(
             self.mini,
             text="PSX",
             bg=PANEL,
             fg=TEXT,
-            font=("Helvetica Neue", 10),
+            font=("Segoe UI", 9),
             padx=0,
             pady=0,
         )
@@ -720,7 +539,7 @@ class PSXLauncher(tk.Tk):
 
         self.protocol("WM_DELETE_WINDOW", self.request_close)
         self.bind("<Escape>", lambda _event: self.request_close())
-        self.bind("<Command-q>", lambda _event: self.request_close())
+        self.bind("<Control-q>", lambda _event: self.request_close())
         self.bind("<Map>", lambda _event: self._apply_topmost())
         self.bind("<FocusIn>", lambda _event: self._apply_topmost())
 
@@ -793,10 +612,7 @@ class PSXLauncher(tk.Tk):
             self._apply_topmost()
 
     def _path_key(self, path: Path) -> str:
-        try:
-            return str(path.resolve())
-        except OSError:
-            return str(path.absolute())
+        return _normalized_windows_path(path)
 
     def _is_launch_locked(self, path: Path) -> bool:
         key = self._path_key(path)
@@ -851,9 +667,9 @@ class PSXLauncher(tk.Tk):
 
         errors: list[str] = []
         launched = False
-
         already_running = False
 
+        windows_processes(force=True)
         for path, hidden, detection in item.paths:
             if not path.exists():
                 errors.append(f"Niet gevonden: {path}")
@@ -871,7 +687,8 @@ class PSXLauncher(tk.Tk):
         if errors:
             button.set_status("partial" if launched else "error")
             self._show_nonfatal_error(
-                "\n\n".join(errors) + f"\n\nPas de configuratie aan in:\n{CONFIG_PATH}"
+                "\n\n".join(errors)
+                + f"\n\nPas de configuratie aan in:\n{CONFIG_PATH}"
             )
         elif launched or already_running:
             button.set_status("running")
@@ -883,12 +700,15 @@ class PSXLauncher(tk.Tk):
         self._status_after_id = None
         if self._closing or self._menu_open:
             return
+
+        windows_processes(force=True)
         aggregate_states: list[str] = []
+
         for item in self.items:
             button = self.buttons[item.section]
             states: list[bool] = []
 
-            for path, hidden, detection in item.paths:
+            for path, _hidden, detection in item.paths:
                 running = is_probably_running_path(path, detection)
                 if running:
                     self.launching_paths.pop(self._path_key(path), None)
@@ -900,21 +720,21 @@ class PSXLauncher(tk.Tk):
                 state = "partial"
             else:
                 state = "off"
+
             button.set_status(state)
             aggregate_states.append(state)
 
+        active_states = [state for state in aggregate_states if state != "off"]
         if any(state == "error" for state in aggregate_states):
             mini_colour = RED
+        elif not active_states:
+            mini_colour = OFF_DOT
+        elif any(state == "partial" for state in active_states):
+            mini_colour = ORANGE
         else:
-            active_states = [state for state in aggregate_states if state != "off"]
-            if not active_states:
-                mini_colour = OFF_DOT
-            elif any(state == "partial" for state in active_states):
-                mini_colour = ORANGE
-            else:
-                mini_colour = GREEN
-        self.mini_dot.itemconfigure(self.mini_dot_id, fill=mini_colour)
+            mini_colour = GREEN
 
+        self.mini_dot.itemconfigure(self.mini_dot_id, fill=mini_colour)
         self._schedule_status_poll(5000)
 
     def _finish_menu(self) -> None:
@@ -961,10 +781,8 @@ class PSXLauncher(tk.Tk):
         self.after(100, poll_menu_closed)
 
     def show_item_menu(self, item: LauncherItem, event=None) -> None:
-        if self._closing or not self.winfo_exists():
-            return
         menu = self.item_menus.get(item.section)
-        if menu is None:
+        if menu is None or self._closing:
             return
         x = event.x_root if event is not None else self.winfo_pointerx()
         y = event.y_root if event is not None else self.winfo_pointery()
@@ -972,18 +790,21 @@ class PSXLauncher(tk.Tk):
 
     def quit_item(self, item: LauncherItem) -> None:
         errors: list[str] = []
-        for path, hidden, detection in item.paths:
+        windows_processes(force=True)
+
+        for path, _hidden, detection in item.paths:
             try:
-                quit_path(path)
+                quit_path(path, detection)
                 self.launching_paths.pop(self._path_key(path), None)
             except Exception as exc:
                 errors.append(f"Kan niet afsluiten: {path}\n{exc}")
+
         if errors:
             self._show_nonfatal_error("\n\n".join(errors))
         self._schedule_status_poll(2000)
 
     def show_settings_menu(self, event=None) -> None:
-        if self._closing or not self.winfo_exists():
+        if self._closing:
             return
         if event is not None:
             x = event.widget.winfo_rootx()
@@ -995,18 +816,11 @@ class PSXLauncher(tk.Tk):
 
     def open_config(self) -> None:
         try:
-            if platform.system() == "Darwin":
-                subprocess.Popen(
-                    ["open", str(CONFIG_PATH)],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                )
-            elif platform.system() == "Windows":
-                os.startfile(str(CONFIG_PATH))  # type: ignore[attr-defined]
-            else:
-                subprocess.Popen(["xdg-open", str(CONFIG_PATH)])
+            os.startfile(str(CONFIG_PATH))  # type: ignore[attr-defined]
         except Exception as exc:
-            self._show_nonfatal_error(f"Kan configuratie niet openen:\n{CONFIG_PATH}\n\n{exc}")
+            self._show_nonfatal_error(
+                f"Kan configuratie niet openen:\n{CONFIG_PATH}\n\n{exc}"
+            )
         self._apply_topmost()
 
     def show_about(self) -> None:
@@ -1020,30 +834,31 @@ class PSXLauncher(tk.Tk):
         except tk.TclError:
             pass
 
-        shell = tk.Frame(about, bg=BG, highlightthickness=1, highlightbackground="#3a3f46")
+        shell = tk.Frame(
+            about, bg=BG, highlightthickness=1, highlightbackground="#3a3f46"
+        )
         shell.pack(fill="both", expand=True)
         tk.Label(
             shell,
             text=APP_NAME,
             bg=BG,
             fg=TEXT,
-            font=("Helvetica Neue", 12, "bold"),
+            font=("Segoe UI", 11, "bold"),
             padx=22,
-            pady=0,
         ).pack(pady=(16, 3))
         tk.Label(
             shell,
-            text=f"Version {APP_VERSION}",
+            text=f"Windows version {APP_VERSION}",
             bg=BG,
             fg=MUTED,
-            font=("Helvetica Neue", 10),
+            font=("Segoe UI", 9),
         ).pack(pady=(0, 13))
         close_button = tk.Label(
             shell,
             text="Close",
             bg=PANEL,
             fg=TEXT,
-            font=("Helvetica Neue", 10),
+            font=("Segoe UI", 9),
             cursor="hand2",
             padx=16,
             pady=6,
@@ -1053,7 +868,9 @@ class PSXLauncher(tk.Tk):
         about.bind("<Escape>", lambda _event: about.destroy())
 
         about.update_idletasks()
-        x = self.winfo_rootx() + max(0, (self.winfo_width() - about.winfo_width()) // 2)
+        x = self.winfo_rootx() + max(
+            0, (self.winfo_width() - about.winfo_width()) // 2
+        )
         y = self.winfo_rooty() + self.winfo_height() + 5
         about.geometry(f"+{x}+{y}")
         about.focus_force()
@@ -1071,8 +888,6 @@ class PSXLauncher(tk.Tk):
         self.after_idle(self.close)
 
     def close(self) -> None:
-        if not self.winfo_exists():
-            return
         try:
             self.destroy()
         except tk.TclError:
@@ -1080,6 +895,10 @@ class PSXLauncher(tk.Tk):
 
 
 def main() -> int:
+    if os.name != "nt":
+        print(f"{APP_NAME} Windows version can only run on Windows.", file=sys.stderr)
+        return 1
+
     try:
         app = PSXLauncher()
         app.mainloop()

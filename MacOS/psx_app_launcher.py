@@ -23,7 +23,7 @@ from pathlib import Path
 from tkinter import messagebox
 
 APP_NAME = "PSX App Launcher"
-APP_VERSION = "2.8"
+APP_VERSION = "1.0"
 
 BG = "#17191c"
 PANEL = "#22252a"

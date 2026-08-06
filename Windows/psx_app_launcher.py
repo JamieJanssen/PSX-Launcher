@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 PSX App Launcher for Windows
-Version 1.1
+Version 1.2
 
 Compact frameless launcher for Aerowinx PSX and related applications.
 Launches configured application paths only; no arbitrary command execution.
@@ -12,6 +12,7 @@ from __future__ import annotations
 import configparser
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -21,7 +22,7 @@ from pathlib import Path
 from tkinter import messagebox
 
 APP_NAME = "PSX App Launcher"
-APP_VERSION = "1.1"
+APP_VERSION = "1.2"
 
 BG = "#17191c"
 PANEL = "#22252a"
@@ -129,6 +130,76 @@ def ensure_config() -> configparser.ConfigParser:
         raise RuntimeError(f"Kan configuratie niet lezen:\n{CONFIG_PATH}\n\n{exc}") from exc
 
     return config
+
+def save_launcher_position(x: int, y: int) -> None:
+    """Update only x and y in [Launcher], preserving the existing INI."""
+    try:
+        with CONFIG_PATH.open("r+", encoding="utf-8-sig", newline="") as handle:
+            text = handle.read()
+            newline = "\r\n" if "\r\n" in text else "\n"
+            lines = text.splitlines(keepends=True)
+
+            section_pattern = re.compile(
+                r"^\s*\[([^]]+)\]\s*(?:[;#].*)?(?:\r?\n)?$",
+                re.IGNORECASE,
+            )
+            value_pattern = re.compile(
+                r"^(\s*)(x|y)(\s*=\s*).*(\r?\n)?$",
+                re.IGNORECASE,
+            )
+
+            launcher_start = None
+            launcher_end = len(lines)
+            for index, line in enumerate(lines):
+                match = section_pattern.match(line)
+                if not match:
+                    continue
+                if match.group(1).strip().lower() == "launcher":
+                    launcher_start = index
+                    for later in range(index + 1, len(lines)):
+                        if section_pattern.match(lines[later]):
+                            launcher_end = later
+                            break
+                    break
+
+            if launcher_start is None:
+                prefix = "" if not text or text.endswith(("\n", "\r")) else newline
+                lines.extend([
+                    prefix + "[Launcher]" + newline,
+                    f"x = {x}{newline}",
+                    f"y = {y}{newline}",
+                ])
+            else:
+                found = {"x": False, "y": False}
+                for index in range(launcher_start + 1, launcher_end):
+                    match = value_pattern.match(lines[index])
+                    if not match:
+                        continue
+                    key = match.group(2).lower()
+                    ending = match.group(4) or newline
+                    value = x if key == "x" else y
+                    lines[index] = (
+                        f"{match.group(1)}{match.group(2)}"
+                        f"{match.group(3)}{value}{ending}"
+                    )
+                    found[key] = True
+
+                additions = []
+                if not found["x"]:
+                    additions.append(f"x = {x}{newline}")
+                if not found["y"]:
+                    additions.append(f"y = {y}{newline}")
+                if additions:
+                    lines[launcher_end:launcher_end] = additions
+
+            handle.seek(0)
+            handle.write("".join(lines))
+            handle.truncate()
+            handle.flush()
+            os.fsync(handle.fileno())
+    except (OSError, UnicodeError):
+        pass
+
 
 
 def configured_items(config: configparser.ConfigParser) -> list[LauncherItem]:
@@ -888,6 +959,13 @@ class PSXLauncher(tk.Tk):
         self.after_idle(self.close)
 
     def close(self) -> None:
+        if not self.winfo_exists():
+            return
+        try:
+            self.update_idletasks()
+            save_launcher_position(self.winfo_x(), self.winfo_y())
+        except tk.TclError:
+            pass
         try:
             self.destroy()
         except tk.TclError:

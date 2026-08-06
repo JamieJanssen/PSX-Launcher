@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 PSX App Launcher
-Version 1.1
+Version 1.2
 
 Compact frameless launcher for Aerowinx PSX and related applications.
 Launches configured application paths only; no command-line execution.
@@ -14,6 +14,7 @@ from functools import lru_cache
 import os
 import platform
 import plistlib
+import re
 import subprocess
 import sys
 import time
@@ -23,7 +24,8 @@ from pathlib import Path
 from tkinter import messagebox
 
 APP_NAME = "PSX App Launcher"
-APP_VERSION = "1.1"
+APP_VERSION = "1.2"
+CONFIG_FILENAME = "psx_app_launcher.ini"
 
 BG = "#17191c"
 PANEL = "#22252a"
@@ -45,13 +47,26 @@ GENERIC_MAC_BUNDLE_IDS = {
 
 
 def app_dir() -> Path:
+    """Return the directory beside the .app bundle for frozen macOS builds."""
     if getattr(sys, "frozen", False):
-        return Path(sys.executable).resolve().parent
+        executable = Path(sys.executable).resolve()
+        for parent in executable.parents:
+            if parent.suffix.lower() == ".app":
+                return parent.parent
+        return executable.parent
     return Path(__file__).resolve().parent
 
 
+def bundled_config_path() -> Path | None:
+    """Return an INI bundled beside the frozen executable, when present."""
+    if not getattr(sys, "frozen", False):
+        return None
+    candidate = Path(sys.executable).resolve().parent / CONFIG_FILENAME
+    return candidate if candidate.is_file() else None
+
+
 BASE_DIR = app_dir()
-CONFIG_PATH = BASE_DIR / "psx_app_launcher.ini"
+CONFIG_PATH = BASE_DIR / CONFIG_FILENAME
 
 
 DEFAULT_CONFIG = {
@@ -139,8 +154,26 @@ def ensure_config() -> configparser.ConfigParser:
     config = configparser.ConfigParser()
     config.optionxform = str
 
-    # The launcher only creates the INI when it does not exist. An existing
-    # configuration is read exactly as-is and is never rewritten or migrated.
+    # Frozen macOS builds keep the working INI beside the .app bundle, not
+    # inside Contents/MacOS. A bundled INI is copied once only when no external
+    # INI exists yet. Existing external configurations are never replaced.
+    if not CONFIG_PATH.exists():
+        bundled = bundled_config_path()
+        if bundled is not None and bundled != CONFIG_PATH:
+            try:
+                with bundled.open("r", encoding="utf-8") as source:
+                    content = source.read()
+                with CONFIG_PATH.open("x", encoding="utf-8") as target:
+                    target.write(content)
+            except FileExistsError:
+                pass
+            except OSError as exc:
+                raise RuntimeError(
+                    f"Kan configuratie niet kopiëren:\n{CONFIG_PATH}\n\n{exc}"
+                ) from exc
+
+    # Create defaults only when neither an external nor bundled configuration
+    # supplied a file. Never rewrite or migrate an existing INI.
     if not CONFIG_PATH.exists():
         for section, values in DEFAULT_CONFIG.items():
             config[section] = values
@@ -148,8 +181,6 @@ def ensure_config() -> configparser.ConfigParser:
             with CONFIG_PATH.open("x", encoding="utf-8") as handle:
                 config.write(handle)
         except FileExistsError:
-            # Another instance may have created it between the existence check
-            # and opening the file. Fall through and read that file unchanged.
             pass
         except OSError as exc:
             raise RuntimeError(
@@ -165,6 +196,70 @@ def ensure_config() -> configparser.ConfigParser:
         raise RuntimeError(f"Kan configuratie niet lezen:\n{CONFIG_PATH}\n\n{exc}") from exc
 
     return config
+
+
+def save_launcher_position(x: int, y: int) -> None:
+    """Update only x and y in [Launcher], preserving all other INI text."""
+    try:
+        text = CONFIG_PATH.read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        return
+
+    newline = "\r\n" if "\r\n" in text else "\n"
+    lines = text.splitlines(keepends=True)
+    section_pattern = re.compile(r"^\s*\[([^]]+)\]\s*(?:[;#].*)?(?:\r?\n)?$", re.IGNORECASE)
+    value_pattern = re.compile(r"^(\s*)(x|y)(\s*=\s*).*(\r?\n)?$", re.IGNORECASE)
+
+    launcher_start: int | None = None
+    launcher_end = len(lines)
+    for index, line in enumerate(lines):
+        match = section_pattern.match(line)
+        if not match:
+            continue
+        if match.group(1).strip().lower() == "launcher":
+            launcher_start = index
+            for later in range(index + 1, len(lines)):
+                if section_pattern.match(lines[later]):
+                    launcher_end = later
+                    break
+            break
+
+    if launcher_start is None:
+        prefix = "" if not text or text.endswith(("\n", "\r")) else newline
+        lines.extend([
+            prefix + "[Launcher]" + newline,
+            f"x = {x}{newline}",
+            f"y = {y}{newline}",
+        ])
+    else:
+        found = {"x": False, "y": False}
+        for index in range(launcher_start + 1, launcher_end):
+            match = value_pattern.match(lines[index])
+            if not match:
+                continue
+            key = match.group(2).lower()
+            ending = match.group(4) or newline
+            value = x if key == "x" else y
+            lines[index] = f"{match.group(1)}{match.group(2)}{match.group(3)}{value}{ending}"
+            found[key] = True
+
+        additions: list[str] = []
+        if not found["x"]:
+            additions.append(f"x = {x}{newline}")
+        if not found["y"]:
+            additions.append(f"y = {y}{newline}")
+        if additions:
+            lines[launcher_end:launcher_end] = additions
+
+    temporary = CONFIG_PATH.with_name(CONFIG_PATH.name + ".tmp")
+    try:
+        temporary.write_text("".join(lines), encoding="utf-8")
+        os.replace(temporary, CONFIG_PATH)
+    except OSError:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def configured_items(config: configparser.ConfigParser) -> list[LauncherItem]:
@@ -243,15 +338,9 @@ def launch_path(path: Path, hidden: bool = False) -> None:
         raise LaunchError(f"Kan niet starten:\n{path}\n\n{exc}") from exc
 
 
-
 @lru_cache(maxsize=64)
 def _mac_app_contains_aerowinx_jar(app_path_text: str) -> bool:
-    """Return True only for an app bundle that actually contains Aerowinx.jar.
-
-    This intentionally does not use the INI section name, button label or the
-    position of the button. The configured bundle itself determines whether the
-    special long-lived Java-process fallback is applicable.
-    """
+    """Return True only for an app bundle that actually contains Aerowinx.jar."""
     app_path = Path(app_path_text)
     if app_path.suffix.lower() != ".app" or not app_path.is_dir():
         return False
@@ -260,8 +349,6 @@ def _mac_app_contains_aerowinx_jar(app_path_text: str) -> bool:
     if not contents.is_dir():
         return False
 
-    # Aerowinx launchers may place the JAR in different subfolders. Search the
-    # bundle once and cache the result; this is not repeated on every 5 s poll.
     try:
         return any(candidate.is_file() for candidate in contents.rglob("Aerowinx.jar"))
     except OSError:
@@ -292,8 +379,6 @@ def _mac_bundle_is_running(bundle_id: str, require_visible: bool = False) -> boo
     normalized = bundle_id.strip().lower()
     if not normalized or normalized in GENERIC_MAC_BUNDLE_IDS:
         return False
-    # System Events identifies the actual app process by bundle identifier. This
-    # remains reliable for Java/PyInstaller apps whose Unix process name may vary.
     escaped = bundle_id.replace('\\', '\\\\').replace('"', '\\"')
     if require_visible:
         script = (
@@ -344,8 +429,6 @@ def _mac_loose_executable_is_running(path: Path) -> bool:
 
 def _mac_executable_is_running(app_path: Path, executable: str, executable_path: Path | None) -> bool:
     try:
-        # First compare against the full command line. This avoids collisions
-        # between similarly named apps and catches wrapper-launched processes.
         result = subprocess.run(
             ["ps", "-axo", "command="],
             capture_output=True,
@@ -355,13 +438,11 @@ def _mac_executable_is_running(app_path: Path, executable: str, executable_path:
         if result.returncode == 0:
             executable_target = str(executable_path) if executable_path else ""
             bundle_target = str(app_path) if app_path.suffix.lower() == ".app" else ""
-            app_name = app_path.stem.strip().lower()
 
             for line in result.stdout.splitlines():
                 command = line.strip()
                 command_lower = command.lower()
 
-                # Native apps normally keep their executable path as argv[0].
                 if executable_target and (
                     command == executable_target
                     or command.startswith(executable_target + " ")
@@ -369,17 +450,9 @@ def _mac_executable_is_running(app_path: Path, executable: str, executable_path:
                 ):
                     return True
 
-                # Java/PyInstaller wrapper apps may exit after spawning their real
-                # process. The spawned command commonly still contains a JAR,
-                # resource, working path or argument inside the original bundle.
                 if bundle_target and bundle_target in command:
                     return True
 
-                # Aerowinx PSX can continue as a plain Java process after
-                # its macOS wrapper has exited. Apply this fallback only when the
-                # configured .app bundle actually contains Aerowinx.jar. This
-                # prevents similarly named apps such as Aerowinx PFPx GUI.app
-                # from becoming green when PSX is running.
                 if _mac_app_contains_aerowinx_jar(str(app_path)):
                     if "java" in command_lower and "aerowinx.jar" in command_lower:
                         return True
@@ -435,18 +508,11 @@ def is_probably_running_path(path: Path, detection: str = "") -> bool:
     system = platform.system()
     try:
         if system == "Darwin":
-            # Loose executables have no bundle identifier. Never fall back to a
-            # process-name match, because that can mistake another process with
-            # the same filename for this configured executable.
             if path.suffix.lower() != ".app":
                 return _mac_loose_executable_is_running(path)
 
             bundle_id, executable, executable_path = mac_app_info(path)
 
-            # Volanta can leave updater/helper processes alive after its main UI
-            # has been closed. Count Volanta itself only while the real app
-            # process is visible; path2 (the Aerowinx bridge) is checked
-            # independently as its own application.
             if path.stem.strip().lower() == "volanta":
                 return _mac_bundle_is_running(bundle_id, require_visible=True)
 
@@ -851,7 +917,6 @@ class PSXLauncher(tk.Tk):
 
         errors: list[str] = []
         launched = False
-
         already_running = False
 
         for path, hidden, detection in item.paths:
@@ -1073,6 +1138,11 @@ class PSXLauncher(tk.Tk):
     def close(self) -> None:
         if not self.winfo_exists():
             return
+        try:
+            self.update_idletasks()
+            save_launcher_position(self.winfo_x(), self.winfo_y())
+        except tk.TclError:
+            pass
         try:
             self.destroy()
         except tk.TclError:

@@ -251,15 +251,18 @@ def save_launcher_position(x: int, y: int) -> None:
         if additions:
             lines[launcher_end:launcher_end] = additions
 
-    temporary = CONFIG_PATH.with_name(CONFIG_PATH.name + ".tmp")
+    # Rewrite the existing file in place. Replacing it with a temporary file
+    # would create a new inode and discard macOS metadata such as the Finder
+    # hidden flag.
     try:
-        temporary.write_text("".join(lines), encoding="utf-8")
-        os.replace(temporary, CONFIG_PATH)
+        with CONFIG_PATH.open("r+", encoding="utf-8", newline="") as handle:
+            handle.seek(0)
+            handle.write("".join(lines))
+            handle.truncate()
+            handle.flush()
+            os.fsync(handle.fileno())
     except OSError:
-        try:
-            temporary.unlink(missing_ok=True)
-        except OSError:
-            pass
+        pass
 
 
 def configured_items(config: configparser.ConfigParser) -> list[LauncherItem]:

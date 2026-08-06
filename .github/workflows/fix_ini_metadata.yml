@@ -1,0 +1,57 @@
+name: Fix macOS INI metadata preservation
+
+on:
+  push:
+    paths:
+      - '.github/workflows/fix_ini_metadata.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - name: Patch launcher
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('MacOS/psx_app_launcher.py')
+          text = path.read_text(encoding='utf-8')
+          old = '''    temporary = CONFIG_PATH.with_name(CONFIG_PATH.name + ".tmp")
+    try:
+        temporary.write_text("".join(lines), encoding="utf-8")
+        os.replace(temporary, CONFIG_PATH)
+    except OSError:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
+'''
+          new = '''    # Rewrite the existing file in place. Replacing it with a temporary file
+    # would create a new inode and discard macOS metadata such as the Finder
+    # hidden flag.
+    try:
+        with CONFIG_PATH.open("r+", encoding="utf-8", newline="") as handle:
+            handle.seek(0)
+            handle.write("".join(lines))
+            handle.truncate()
+            handle.flush()
+            os.fsync(handle.fileno())
+    except OSError:
+        pass
+'''
+          if old not in text:
+              raise SystemExit('Expected save block not found')
+          path.write_text(text.replace(old, new, 1), encoding='utf-8')
+          PY
+          rm .github/workflows/fix_ini_metadata.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add MacOS/psx_app_launcher.py .github/workflows/fix_ini_metadata.yml
+          git commit -m "Preserve macOS INI file metadata when saving position"
+          git push origin main

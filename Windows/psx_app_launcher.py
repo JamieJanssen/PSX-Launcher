@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 PSX App Launcher for Windows
-Version 1.2a
+Version 1.2b
 
 Compact frameless launcher for Aerowinx PSX and related applications.
 Launches configured application paths only; no arbitrary command execution.
@@ -22,7 +22,7 @@ from pathlib import Path
 from tkinter import messagebox
 
 APP_NAME = "PSX App Launcher"
-APP_VERSION = "1.2a"
+APP_VERSION = "1.2b"
 
 BG = "#17191c"
 PANEL = "#22252a"
@@ -58,7 +58,7 @@ DEFAULT_CONFIG = {
         "enabled": "true",
         "hidden1": "false",
         "hidden2": "false",
-        "path1": r"C:\Aerowinx\AerowinxStart.jar",
+        "path1": r"C:\Games\Aerowinx",
         "detect1": "Aerowinx.jar",
         "path2": "",
         "detect2": "",
@@ -366,6 +366,30 @@ def is_probably_running_path(path: Path, detection: str = "") -> bool:
     if not detection and not path.exists():
         return False
     return bool(matching_processes(path, detection))
+
+
+def launch_psx(psx_root: Path, hidden: bool = False) -> None:
+    """Start Aerowinx.jar with its PSX root as the working directory."""
+    if not psx_root.is_dir():
+        raise LaunchError(f"PSX-map niet gevonden:\n{psx_root}")
+
+    try:
+        subprocess.Popen(
+            [
+                "java.exe",
+                "-Xmx500m",
+                "-Djava.library.path=Interfaces",
+                "-jar",
+                "Aerowinx.jar",
+            ],
+            cwd=str(psx_root),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL if hidden else None,
+            stderr=subprocess.DEVNULL if hidden else None,
+            creationflags=CREATE_NO_WINDOW if hidden else 0,
+        )
+    except OSError as exc:
+        raise LaunchError(f"Kan PSX niet starten:\n{psx_root}\n\n{exc}") from exc
 
 
 def launch_path(path: Path, hidden: bool = False) -> None:
@@ -745,7 +769,10 @@ class PSXLauncher(tk.Tk):
                 continue
             try:
                 self._mark_launching(path)
-                launch_path(path, hidden=hidden)
+                if item.section.casefold() == "psx":
+                    launch_psx(path, hidden=hidden)
+                else:
+                    launch_path(path, hidden=hidden)
                 launched = True
             except Exception as exc:
                 errors.append(f"Kan niet starten: {path}\n{exc}")

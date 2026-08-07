@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 PSX App Launcher for Windows
-Version 1.2b
+Version 1.2c
 
 Compact frameless launcher for Aerowinx PSX and related applications.
 Launches configured application paths only; no arbitrary command execution.
@@ -23,7 +23,7 @@ from pathlib import Path
 from tkinter import messagebox
 
 APP_NAME = "PSX App Launcher"
-APP_VERSION = "1.2b"
+APP_VERSION = "1.2c"
 
 BG = "#17191c"
 PANEL = "#22252a"

@@ -10,6 +10,7 @@ Launches configured application paths only; no arbitrary command execution.
 from __future__ import annotations
 
 import configparser
+import ctypes
 import json
 import os
 import re
@@ -400,6 +401,19 @@ def launch_path(path: Path, hidden: bool = False) -> None:
     creationflags = CREATE_NO_WINDOW if hidden else 0
 
     try:
+        if suffix == ".lnk":
+            result = ctypes.windll.shell32.ShellExecuteW(
+                None,
+                "open",
+                str(path),
+                None,
+                None,
+                1,
+            )
+            if result <= 32:
+                raise OSError(f"ShellExecuteW failed with code {result}")
+            return
+
         if suffix == ".exe":
             if hidden:
                 subprocess.Popen(
@@ -769,7 +783,7 @@ class PSXLauncher(tk.Tk):
                 continue
             try:
                 self._mark_launching(path)
-                if item.section.casefold() == "psx":
+                if item.section.casefold() == "psx" and path.is_dir():
                     launch_psx(path, hidden=hidden)
                 else:
                     launch_path(path, hidden=hidden)

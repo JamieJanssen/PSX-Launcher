@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 PSX App Launcher for Windows
-Version 1.2c
+Version 1.2d
 
 Compact frameless launcher for Aerowinx PSX and related applications.
 Launches configured application paths only; no arbitrary command execution.
@@ -23,7 +23,7 @@ from pathlib import Path
 from tkinter import messagebox
 
 APP_NAME = "PSX App Launcher"
-APP_VERSION = "1.2c"
+APP_VERSION = "1.2d"
 
 BG = "#17191c"
 PANEL = "#22252a"
@@ -393,6 +393,76 @@ def launch_psx(psx_root: Path, hidden: bool = False) -> None:
         raise LaunchError(f"Kan PSX niet starten:\n{psx_root}\n\n{exc}") from exc
 
 
+
+def _shortcut_working_directory(path: Path) -> Path | None:
+    """Read the shortcut's Start in directory without changing the shortcut."""
+    script = (
+        "$shortcut = (New-Object -ComObject WScript.Shell)"
+        ".CreateShortcut($env:PSX_LAUNCHER_SHORTCUT);"
+        "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8;"
+        "$shortcut.WorkingDirectory"
+    )
+    environment = os.environ.copy()
+    environment["PSX_LAUNCHER_SHORTCUT"] = str(path)
+
+    try:
+        result = subprocess.run(
+            [
+                _powershell_executable(),
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                script,
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=5,
+            creationflags=CREATE_NO_WINDOW,
+            env=environment,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+    working_directory = os.path.expandvars(result.stdout.strip())
+    if result.returncode != 0 or not working_directory:
+        return None
+
+    directory = Path(working_directory)
+    return directory if directory.is_dir() else None
+
+
+def _launch_windows_shortcut(path: Path) -> None:
+    """Open a shortcut with its Start in directory and inherited PSX environment."""
+    working_directory = _shortcut_working_directory(path)
+    old_path = os.environ.get("PATH", "")
+
+    try:
+        if working_directory is not None:
+            interfaces_directory = working_directory / "Interfaces"
+            if interfaces_directory.is_dir():
+                os.environ["PATH"] = (
+                    str(interfaces_directory)
+                    + (os.pathsep + old_path if old_path else "")
+                )
+
+        result = ctypes.windll.shell32.ShellExecuteW(
+            None,
+            "open",
+            str(path),
+            None,
+            str(working_directory) if working_directory is not None else None,
+            1,
+        )
+        if result <= 32:
+            raise OSError(f"ShellExecuteW failed with code {result}")
+    finally:
+        os.environ["PATH"] = old_path
+
 def launch_path(path: Path, hidden: bool = False) -> None:
     if not path.exists():
         raise LaunchError(f"Niet gevonden:\n{path}")
@@ -402,16 +472,7 @@ def launch_path(path: Path, hidden: bool = False) -> None:
 
     try:
         if suffix == ".lnk":
-            result = ctypes.windll.shell32.ShellExecuteW(
-                None,
-                "open",
-                str(path),
-                None,
-                None,
-                1,
-            )
-            if result <= 32:
-                raise OSError(f"ShellExecuteW failed with code {result}")
+            _launch_windows_shortcut(path)
             return
 
         if suffix == ".exe":

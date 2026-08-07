@@ -402,15 +402,7 @@ def launch_path(path: Path, hidden: bool = False) -> None:
             return
 
         if suffix == ".jar":
-            java = "javaw.exe" if hidden else "java.exe"
-            subprocess.Popen(
-                [java, "-jar", str(path)],
-                cwd=str(path.parent),
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL if hidden else None,
-                stderr=subprocess.DEVNULL if hidden else None,
-                creationflags=CREATE_NO_WINDOW if hidden else CREATE_NEW_CONSOLE,
-            )
+            os.startfile(str(path))  # type: ignore[attr-defined]
             return
 
         # Shortcuts, documents and other registered file types are opened using

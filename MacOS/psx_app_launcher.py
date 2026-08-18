@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 PSX App Launcher
-Version 1.2c
+Version 1.2d
 
 Compact frameless launcher for Aerowinx PSX and related applications.
 Launches configured application paths only; no command-line execution.
@@ -24,7 +24,7 @@ from pathlib import Path
 from tkinter import messagebox
 
 APP_NAME = "PSX Launcher"
-APP_VERSION = "1.2c"
+APP_VERSION = "1.2d"
 CONFIG_FILENAME = "psx_app_launcher.ini"
 
 BG = "#17191c"
@@ -734,21 +734,21 @@ class PSXLauncher(tk.Tk):
 
         self.drag_handle = tk.Canvas(
             self.shell,
-            width=38,
-            height=38,
+            width=26,
+            height=26,
             bg=BG,
             highlightthickness=0,
             bd=0,
             cursor="fleur",
         )
-        for y in (12, 19, 26):
+        for y in (7, 13, 19):
             self.drag_handle.create_line(
-                9,
+                6,
                 y,
-                29,
+                20,
                 y,
                 fill=MUTED,
-                width=3,
+                width=2,
                 capstyle=tk.ROUND,
                 tags=("hamburger",),
             )

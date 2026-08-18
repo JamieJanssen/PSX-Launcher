@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 PSX App Launcher
-Version 1.2
+Version 1.2a
 
 Compact frameless launcher for Aerowinx PSX and related applications.
 Launches configured application paths only; no command-line execution.
@@ -23,8 +23,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from tkinter import messagebox
 
-APP_NAME = "PSX App Launcher"
-APP_VERSION = "1.2"
+APP_NAME = "PSX Launcher"
+APP_VERSION = "1.2a"
 CONFIG_FILENAME = "psx_app_launcher.ini"
 
 BG = "#17191c"
@@ -66,7 +66,9 @@ def bundled_config_path() -> Path | None:
 
 
 BASE_DIR = app_dir()
-CONFIG_PATH = BASE_DIR / CONFIG_FILENAME
+CONFIG_DIR = Path.home() / "Library" / "Application Support" / APP_NAME
+CONFIG_PATH = CONFIG_DIR / CONFIG_FILENAME
+LEGACY_CONFIG_PATH = BASE_DIR / CONFIG_FILENAME
 
 
 DEFAULT_CONFIG = {
@@ -154,19 +156,29 @@ def ensure_config() -> configparser.ConfigParser:
     config = configparser.ConfigParser()
     config.optionxform = str
 
-    # Frozen macOS builds keep the working INI beside the .app bundle, not
-    # inside Contents/MacOS. A bundled INI is copied once only when no external
-    # INI exists yet. Existing external configurations are never replaced.
+    try:
+        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise RuntimeError(
+            f"Kan configuratiemap niet aanmaken:\n{CONFIG_DIR}\n\n{exc}"
+        ) from exc
+
+    # Keep the working INI in the user's Application Support directory. On the
+    # first run, preserve an existing legacy INI beside the .app; otherwise use
+    # the bundled INI. Existing configurations are never replaced or rewritten.
     if not CONFIG_PATH.exists():
-        bundled = bundled_config_path()
-        if bundled is not None and bundled != CONFIG_PATH:
+        candidates = [LEGACY_CONFIG_PATH, bundled_config_path()]
+        for candidate in candidates:
+            if candidate is None or candidate == CONFIG_PATH or not candidate.is_file():
+                continue
             try:
-                with bundled.open("r", encoding="utf-8") as source:
+                with candidate.open("r", encoding="utf-8") as source:
                     content = source.read()
                 with CONFIG_PATH.open("x", encoding="utf-8") as target:
                     target.write(content)
+                break
             except FileExistsError:
-                pass
+                break
             except OSError as exc:
                 raise RuntimeError(
                     f"Kan configuratie niet kopiëren:\n{CONFIG_PATH}\n\n{exc}"

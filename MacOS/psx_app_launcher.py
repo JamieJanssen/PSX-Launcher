@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 PSX App Launcher
-Version 1.2b
+Version 1.2c
 
 Compact frameless launcher for Aerowinx PSX and related applications.
 Launches configured application paths only; no command-line execution.
@@ -24,7 +24,7 @@ from pathlib import Path
 from tkinter import messagebox
 
 APP_NAME = "PSX Launcher"
-APP_VERSION = "1.2b"
+APP_VERSION = "1.2c"
 CONFIG_FILENAME = "psx_app_launcher.ini"
 
 BG = "#17191c"
@@ -732,21 +732,38 @@ class PSXLauncher(tk.Tk):
         self._drag_origin_y = 0
         self._drag_moved = False
 
-        self.drag_handle = tk.Label(
+        self.drag_handle = tk.Canvas(
             self.shell,
-            text="☰",
+            width=38,
+            height=38,
             bg=BG,
-            fg=MUTED,
-            font=("Helvetica Neue", 14),
+            highlightthickness=0,
+            bd=0,
             cursor="fleur",
-            padx=5,
         )
-        self.drag_handle.pack(side="left", fill="y")
+        for y in (12, 19, 26):
+            self.drag_handle.create_line(
+                9,
+                y,
+                29,
+                y,
+                fill=MUTED,
+                width=3,
+                capstyle=tk.ROUND,
+                tags=("hamburger",),
+            )
+        self.drag_handle.pack(side="left")
         self.drag_handle.bind("<ButtonPress-1>", self._start_drag)
         self.drag_handle.bind("<B1-Motion>", self._drag_window)
         self.drag_handle.bind("<ButtonRelease-1>", self._hamburger_released)
-        self.drag_handle.bind("<Enter>", lambda _event: self.drag_handle.configure(fg=TEXT))
-        self.drag_handle.bind("<Leave>", lambda _event: self.drag_handle.configure(fg=MUTED))
+        self.drag_handle.bind(
+            "<Enter>",
+            lambda _event: self.drag_handle.itemconfigure("hamburger", fill=TEXT),
+        )
+        self.drag_handle.bind(
+            "<Leave>",
+            lambda _event: self.drag_handle.itemconfigure("hamburger", fill=MUTED),
+        )
 
         self.content = tk.Frame(self.shell, bg=BG)
         self.content.pack(side="left", fill="both", expand=True)
@@ -870,7 +887,7 @@ class PSXLauncher(tk.Tk):
             return
         self.collapsed = False
         self.mini.pack_forget()
-        self.drag_handle.pack(side="left", fill="y")
+        self.drag_handle.pack(side="left")
         self.content.pack(side="left", fill="both", expand=True)
         self.update_idletasks()
         self.geometry("")

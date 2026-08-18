@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 PSX App Launcher
-Version 1.2a
+Version 1.2b
 
 Compact frameless launcher for Aerowinx PSX and related applications.
 Launches configured application paths only; no command-line execution.
@@ -24,7 +24,7 @@ from pathlib import Path
 from tkinter import messagebox
 
 APP_NAME = "PSX Launcher"
-APP_VERSION = "1.2a"
+APP_VERSION = "1.2b"
 CONFIG_FILENAME = "psx_app_launcher.ini"
 
 BG = "#17191c"
@@ -732,12 +732,21 @@ class PSXLauncher(tk.Tk):
         self._drag_origin_y = 0
         self._drag_moved = False
 
-        self.drag_handle = tk.Frame(self.shell, bg=BG, width=26, cursor="fleur")
+        self.drag_handle = tk.Label(
+            self.shell,
+            text="☰",
+            bg=BG,
+            fg=MUTED,
+            font=("Helvetica Neue", 14),
+            cursor="fleur",
+            padx=5,
+        )
         self.drag_handle.pack(side="left", fill="y")
-        self.drag_handle.pack_propagate(False)
         self.drag_handle.bind("<ButtonPress-1>", self._start_drag)
         self.drag_handle.bind("<B1-Motion>", self._drag_window)
-        self.drag_handle.bind("<Double-Button-1>", lambda _event: self.collapse())
+        self.drag_handle.bind("<ButtonRelease-1>", self._hamburger_released)
+        self.drag_handle.bind("<Enter>", lambda _event: self.drag_handle.configure(fg=TEXT))
+        self.drag_handle.bind("<Leave>", lambda _event: self.drag_handle.configure(fg=MUTED))
 
         self.content = tk.Frame(self.shell, bg=BG)
         self.content.pack(side="left", fill="both", expand=True)
@@ -836,6 +845,10 @@ class PSXLauncher(tk.Tk):
         if abs(x - self.winfo_x()) > 2 or abs(y - self.winfo_y()) > 2:
             self._drag_moved = True
         self.geometry(f"+{x}+{y}")
+
+    def _hamburger_released(self, _event=None) -> None:
+        if not self._drag_moved:
+            self.collapse()
 
     def _mini_released(self, _event=None) -> None:
         if not self._drag_moved:

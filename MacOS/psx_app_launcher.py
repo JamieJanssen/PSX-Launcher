@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-PSX App Launcher
-Version 1.2d
+PSX Launcher
+Version 1.2e
 
 Compact frameless launcher for Aerowinx PSX and related applications.
 Launches configured application paths only; no command-line execution.
@@ -24,7 +24,7 @@ from pathlib import Path
 from tkinter import messagebox
 
 APP_NAME = "PSX Launcher"
-APP_VERSION = "1.2d"
+APP_VERSION = "1.2e"
 CONFIG_FILENAME = "psx_app_launcher.ini"
 
 BG = "#17191c"
@@ -160,7 +160,7 @@ def ensure_config() -> configparser.ConfigParser:
         CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
         raise RuntimeError(
-            f"Kan configuratiemap niet aanmaken:\n{CONFIG_DIR}\n\n{exc}"
+            f"Cannot create configuration directory:\n{CONFIG_DIR}\n\n{exc}"
         ) from exc
 
     # Keep the working INI in the user's Application Support directory. On the
@@ -181,7 +181,7 @@ def ensure_config() -> configparser.ConfigParser:
                 break
             except OSError as exc:
                 raise RuntimeError(
-                    f"Kan configuratie niet kopiëren:\n{CONFIG_PATH}\n\n{exc}"
+                    f"Cannot copy configuration:\n{CONFIG_PATH}\n\n{exc}"
                 ) from exc
 
     # Create defaults only when neither an external nor bundled configuration
@@ -196,7 +196,7 @@ def ensure_config() -> configparser.ConfigParser:
             pass
         except OSError as exc:
             raise RuntimeError(
-                f"Kan configuratie niet aanmaken:\n{CONFIG_PATH}\n\n{exc}"
+                f"Cannot create configuration:\n{CONFIG_PATH}\n\n{exc}"
             ) from exc
 
     config.clear()
@@ -205,7 +205,7 @@ def ensure_config() -> configparser.ConfigParser:
         with CONFIG_PATH.open("r", encoding="utf-8") as handle:
             config.read_file(handle)
     except (OSError, UnicodeError, configparser.Error) as exc:
-        raise RuntimeError(f"Kan configuratie niet lezen:\n{CONFIG_PATH}\n\n{exc}") from exc
+        raise RuntimeError(f"Cannot read configuration:\n{CONFIG_PATH}\n\n{exc}") from exc
 
     return config
 
@@ -310,7 +310,7 @@ def configured_items(config: configparser.ConfigParser) -> list[LauncherItem]:
 
 def launch_path(path: Path, hidden: bool = False) -> None:
     if not path.exists():
-        raise LaunchError(f"Niet gevonden:\n{path}")
+        raise LaunchError(f"Not found:\n{path}")
 
     system = platform.system()
     try:
@@ -323,7 +323,7 @@ def launch_path(path: Path, hidden: bool = False) -> None:
                 )
             else:
                 if not os.access(path, os.X_OK):
-                    raise LaunchError(f"Bestand is niet uitvoerbaar:\n{path}")
+                    raise LaunchError(f"File is not executable:\n{path}")
                 if hidden:
                     subprocess.Popen(
                         [str(path)],
@@ -350,7 +350,7 @@ def launch_path(path: Path, hidden: bool = False) -> None:
                 stderr=subprocess.DEVNULL,
             )
     except OSError as exc:
-        raise LaunchError(f"Kan niet starten:\n{path}\n\n{exc}") from exc
+        raise LaunchError(f"Cannot launch:\n{path}\n\n{exc}") from exc
 
 
 @lru_cache(maxsize=64)
@@ -945,8 +945,8 @@ class PSXLauncher(tk.Tk):
             if button is not None:
                 button.set_status("error")
             self._show_nonfatal_error(
-                f"Kan {item.label} niet starten.\n\n{exc}\n\n"
-                f"Controleer de configuratie in:\n{CONFIG_PATH}"
+                f"Cannot launch {item.label}.\n\n{exc}\n\n"
+                f"Check the configuration in:\n{CONFIG_PATH}"
             )
 
     def _launch_item_safe(self, item: LauncherItem) -> None:
@@ -955,8 +955,8 @@ class PSXLauncher(tk.Tk):
         if not item.paths:
             button.set_status("error")
             self._show_nonfatal_error(
-                "Voor deze knop is nog niets ingesteld.\n\n"
-                f"Vul path1 of path2 in:\n{CONFIG_PATH}"
+                "Nothing has been configured for this button yet.\n\n"
+                f"Enter path1 or path2 in:\n{CONFIG_PATH}"
             )
             return
 
@@ -966,7 +966,7 @@ class PSXLauncher(tk.Tk):
 
         for path, hidden, detection in item.paths:
             if not path.exists():
-                errors.append(f"Niet gevonden: {path}")
+                errors.append(f"Not found: {path}")
                 continue
             if self._is_launch_locked(path) or is_probably_running_path(path, detection):
                 already_running = True
@@ -976,12 +976,12 @@ class PSXLauncher(tk.Tk):
                 launch_path(path, hidden=hidden)
                 launched = True
             except Exception as exc:
-                errors.append(f"Kan niet starten: {path}\n{exc}")
+                errors.append(f"Cannot launch: {path}\n{exc}")
 
         if errors:
             button.set_status("partial" if launched else "error")
             self._show_nonfatal_error(
-                "\n\n".join(errors) + f"\n\nPas de configuratie aan in:\n{CONFIG_PATH}"
+                "\n\n".join(errors) + f"\n\nUpdate the configuration in:\n{CONFIG_PATH}"
             )
         elif launched or already_running:
             button.set_status("running")
@@ -1087,7 +1087,7 @@ class PSXLauncher(tk.Tk):
                 quit_path(path)
                 self.launching_paths.pop(self._path_key(path), None)
             except Exception as exc:
-                errors.append(f"Kan niet afsluiten: {path}\n{exc}")
+                errors.append(f"Cannot quit: {path}\n{exc}")
         if errors:
             self._show_nonfatal_error("\n\n".join(errors))
         self._schedule_status_poll(2000)
@@ -1116,7 +1116,7 @@ class PSXLauncher(tk.Tk):
             else:
                 subprocess.Popen(["xdg-open", str(CONFIG_PATH)])
         except Exception as exc:
-            self._show_nonfatal_error(f"Kan configuratie niet openen:\n{CONFIG_PATH}\n\n{exc}")
+            self._show_nonfatal_error(f"Cannot open configuration:\n{CONFIG_PATH}\n\n{exc}")
         self._apply_topmost()
 
     def show_about(self) -> None:
@@ -1201,7 +1201,7 @@ def main() -> int:
         return 0
     except Exception as exc:
         try:
-            messagebox.showerror(APP_NAME, f"Onverwachte fout:\n\n{exc}")
+            messagebox.showerror(APP_NAME, f"Unexpected error:\n\n{exc}")
         except Exception:
             print(f"[{APP_NAME}] {exc}", file=sys.stderr)
         return 1

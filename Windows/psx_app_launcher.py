@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 PSX App Launcher for Windows
-Version 1.2e
+Version 1.2f
 
 Compact frameless launcher for Aerowinx PSX and related applications.
 Launches configured application paths only; no arbitrary command execution.
@@ -23,7 +23,7 @@ from pathlib import Path
 from tkinter import messagebox
 
 APP_NAME = "PSX App Launcher"
-APP_VERSION = "1.2e"
+APP_VERSION = "1.2f"
 
 BG = "#17191c"
 PANEL = "#22252a"
@@ -468,8 +468,6 @@ def launch_path(path: Path, hidden: bool = False) -> None:
         raise LaunchError(f"Niet gevonden:\n{path}")
 
     suffix = path.suffix.lower()
-    creationflags = CREATE_NO_WINDOW if hidden else 0
-
     try:
         if suffix == ".lnk":
             _launch_windows_shortcut(path)
@@ -477,18 +475,16 @@ def launch_path(path: Path, hidden: bool = False) -> None:
 
         if suffix == ".exe":
             if hidden:
-                startupinfo = subprocess.STARTUPINFO()
-                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-                startupinfo.wShowWindow = subprocess.SW_HIDE
-                subprocess.Popen(
-                    [str(path)],
-                    cwd=str(path.parent),
-                    stdin=subprocess.DEVNULL,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    creationflags=CREATE_NEW_CONSOLE,
-                    startupinfo=startupinfo,
+                result = ctypes.windll.shell32.ShellExecuteW(
+                    None,
+                    "open",
+                    str(path),
+                    None,
+                    str(path.parent),
+                    0,
                 )
+                if result <= 32:
+                    raise OSError(f"ShellExecuteW failed with code {result}")
             else:
                 os.startfile(str(path))  # type: ignore[attr-defined]
             return

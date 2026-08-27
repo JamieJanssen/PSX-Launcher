@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 PSX App Launcher for Windows
-Version 1.2f
+Version 1.2g
 
 Compact frameless launcher for Aerowinx PSX and related applications.
 Launches configured application paths only; no arbitrary command execution.
@@ -23,7 +23,7 @@ from pathlib import Path
 from tkinter import messagebox
 
 APP_NAME = "PSX App Launcher"
-APP_VERSION = "1.2f"
+APP_VERSION = "1.2g"
 
 BG = "#17191c"
 PANEL = "#22252a"
@@ -523,7 +523,7 @@ def quit_path(path: Path, detection: str = "") -> None:
         if process.pid <= 0 or process.pid == own_pid:
             continue
         subprocess.run(
-            ["taskkill.exe", "/PID", str(process.pid), "/T"],
+            ["taskkill.exe", "/PID", str(process.pid), "/T", "/F"],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             timeout=4,
@@ -952,8 +952,22 @@ class PSXLauncher(tk.Tk):
         menu = self.item_menus.get(item.section)
         if menu is None or self._closing:
             return
+
         x = event.x_root if event is not None else self.winfo_pointerx()
-        y = event.y_root if event is not None else self.winfo_pointery()
+        launcher_top = self.winfo_rooty()
+        launcher_bottom = launcher_top + self.winfo_height()
+
+        try:
+            menu.update_idletasks()
+            menu_height = max(1, menu.winfo_reqheight())
+        except tk.TclError:
+            menu_height = 30
+
+        if launcher_bottom + menu_height <= self.winfo_screenheight():
+            y = launcher_bottom
+        else:
+            y = max(0, launcher_top - menu_height)
+
         self.after_idle(lambda: self._post_menu(menu, x, y))
 
     def quit_item(self, item: LauncherItem) -> None:

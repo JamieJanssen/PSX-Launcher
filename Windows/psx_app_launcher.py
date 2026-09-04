@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 PSX App Launcher for Windows
-Version 1.2k
+Version 1.2l
 
 Compact frameless launcher for Aerowinx PSX and related applications.
 Launches configured application paths only; no arbitrary command execution.
@@ -23,7 +23,7 @@ from pathlib import Path
 from tkinter import messagebox
 
 APP_NAME = "PSX App Launcher"
-APP_VERSION = "1.2k"
+APP_VERSION = "1.2l"
 
 BG = "#17191c"
 PANEL = "#22252a"
@@ -675,6 +675,7 @@ class UtilityButton(tk.Frame):
 class PSXLauncher(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
+        self.withdraw()
         self.config_data = ensure_config()
         self.items = configured_items(self.config_data)
         self.buttons: dict[str, UtilityButton] = {}
@@ -816,6 +817,8 @@ class PSXLauncher(tk.Tk):
         self.bind("<Map>", lambda _event: self._apply_topmost())
         self.bind("<FocusIn>", lambda _event: self._apply_topmost())
 
+        self.deiconify()
+        self.after_idle(self._restore_saved_position)
         self.after_idle(self._apply_topmost)
         self.after(200, self._apply_topmost)
         self.after(1000, self._maintain_topmost)
@@ -844,8 +847,8 @@ class PSXLauncher(tk.Tk):
         reference_y: int | None = None,
     ) -> tuple[int, int]:
         self.update_idletasks()
-        width = max(1, self.winfo_width())
-        height = max(1, self.winfo_height())
+        width = max(1, self.winfo_width(), self.winfo_reqwidth())
+        height = max(1, self.winfo_height(), self.winfo_reqheight())
         point_x = reference_x if reference_x is not None else x + width // 2
         point_y = reference_y if reference_y is not None else y + height // 2
         left, top, right, bottom = _windows_work_area_for_point(point_x, point_y)
@@ -856,6 +859,14 @@ class PSXLauncher(tk.Tk):
             min(max(x, left), maximum_x),
             min(max(y, top), maximum_y),
         )
+
+    def _restore_saved_position(self) -> None:
+        if self._closing or not self.winfo_exists():
+            return
+        x, y = self._last_position
+        x, y = self._clamp_position(x, y)
+        self._last_position = (x, y)
+        self.geometry(f"{x:+d}{y:+d}")
 
     def _ensure_on_screen(self) -> None:
         if self._closing or not self.winfo_exists():

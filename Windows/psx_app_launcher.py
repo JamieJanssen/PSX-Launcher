@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 PSX App Launcher for Windows
-Version 1.2j
+Version 1.2k
 
 Compact frameless launcher for Aerowinx PSX and related applications.
 Launches configured application paths only; no arbitrary command execution.
@@ -23,7 +23,7 @@ from pathlib import Path
 from tkinter import messagebox
 
 APP_NAME = "PSX App Launcher"
-APP_VERSION = "1.2j"
+APP_VERSION = "1.2k"
 
 BG = "#17191c"
 PANEL = "#22252a"
@@ -38,6 +38,8 @@ RED = "#df6464"
 CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
 CREATE_NEW_CONSOLE = getattr(subprocess, "CREATE_NEW_CONSOLE", 0x00000010)
 MONITOR_DEFAULTTONEAREST = 2
+ERROR_ALREADY_EXISTS = 183
+SINGLE_INSTANCE_MUTEX = r"Local\JamieJets.PSXLauncher"
 
 
 class _WindowsPoint(ctypes.Structure):
@@ -92,6 +94,29 @@ def _windows_work_area_for_point(x: int, y: int) -> tuple[int, int, int, int]:
         int(user32.GetSystemMetrics(0)),
         int(user32.GetSystemMetrics(1)),
     )
+
+
+def _acquire_single_instance_mutex() -> int | None:
+    """Return a mutex handle, or None when another launcher is already running."""
+    kernel32 = ctypes.windll.kernel32
+    create_mutex = kernel32.CreateMutexW
+    create_mutex.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_wchar_p]
+    create_mutex.restype = ctypes.c_void_p
+
+    handle = create_mutex(None, False, SINGLE_INSTANCE_MUTEX)
+    if not handle:
+        raise ctypes.WinError()
+
+    if kernel32.GetLastError() == ERROR_ALREADY_EXISTS:
+        kernel32.CloseHandle(ctypes.c_void_p(handle))
+        return None
+
+    return int(handle)
+
+
+def _release_single_instance_mutex(handle: int) -> None:
+    kernel32 = ctypes.windll.kernel32
+    kernel32.CloseHandle(ctypes.c_void_p(handle))
 
 
 def app_dir() -> Path:
@@ -673,6 +698,7 @@ class PSXLauncher(tk.Tk):
         self._drag_origin_x = 0
         self._drag_origin_y = 0
         self._drag_moved = False
+        self._last_position = (80, 80)
 
         self.drag_handle = tk.Canvas(
             self.shell,
@@ -781,6 +807,8 @@ class PSXLauncher(tk.Tk):
 
         x = self.config_data.getint("Launcher", "x", fallback=80)
         y = self.config_data.getint("Launcher", "y", fallback=80)
+        x, y = self._clamp_position(x, y)
+        self._last_position = (x, y)
         self.geometry(f"{x:+d}{y:+d}")
 
         self.protocol("WM_DELETE_WINDOW", self.request_close)
@@ -788,7 +816,6 @@ class PSXLauncher(tk.Tk):
         self.bind("<Map>", lambda _event: self._apply_topmost())
         self.bind("<FocusIn>", lambda _event: self._apply_topmost())
 
-        self.after_idle(self._ensure_on_screen)
         self.after_idle(self._apply_topmost)
         self.after(200, self._apply_topmost)
         self.after(1000, self._maintain_topmost)
@@ -834,6 +861,7 @@ class PSXLauncher(tk.Tk):
         if self._closing or not self.winfo_exists():
             return
         x, y = self._clamp_position(self.winfo_x(), self.winfo_y())
+        self._last_position = (x, y)
         self.geometry(f"{x:+d}{y:+d}")
 
     def _start_drag(self, event) -> None:
@@ -852,6 +880,7 @@ class PSXLauncher(tk.Tk):
             reference_x=event.x_root,
             reference_y=event.y_root,
         )
+        self._last_position = (x, y)
         self.geometry(f"{x:+d}{y:+d}")
 
     def _hamburger_released(self, _event=None) -> None:
@@ -1196,7 +1225,8 @@ class PSXLauncher(tk.Tk):
             return
         try:
             self.update_idletasks()
-            save_launcher_position(self.winfo_x(), self.winfo_y())
+            x, y = self._last_position
+            save_launcher_position(x, y)
         except tk.TclError:
             pass
         try:
@@ -1210,7 +1240,13 @@ def main() -> int:
         print(f"{APP_NAME} Windows version can only run on Windows.", file=sys.stderr)
         return 1
 
+    mutex_handle: int | None = None
     try:
+        mutex_handle = _acquire_single_instance_mutex()
+        if mutex_handle is None:
+            messagebox.showinfo(APP_NAME, f"{APP_NAME} is already running.")
+            return 0
+
         app = PSXLauncher()
         app.mainloop()
         return 0
@@ -1220,6 +1256,9 @@ def main() -> int:
         except Exception:
             print(f"[{APP_NAME}] {exc}", file=sys.stderr)
         return 1
+    finally:
+        if mutex_handle is not None:
+            _release_single_instance_mutex(mutex_handle)
 
 
 if __name__ == "__main__":

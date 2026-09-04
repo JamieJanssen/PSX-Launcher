@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 PSX Launcher
-Version 1.2e
+Version 1.3
 
 Compact frameless launcher for Aerowinx PSX and related applications.
 Launches configured application paths only; no command-line execution.
@@ -24,7 +24,7 @@ from pathlib import Path
 from tkinter import messagebox
 
 APP_NAME = "PSX Launcher"
-APP_VERSION = "1.2e"
+APP_VERSION = "1.3"
 CONFIG_FILENAME = "psx_app_launcher.ini"
 
 BG = "#17191c"
@@ -826,7 +826,6 @@ class PSXLauncher(tk.Tk):
         self.geometry(f"+{x}+{y}")
 
         self.protocol("WM_DELETE_WINDOW", self.request_close)
-        self.bind("<Escape>", lambda _event: self.request_close())
         self.bind("<Command-q>", lambda _event: self.request_close())
         self.bind("<Map>", lambda _event: self._apply_topmost())
         self.bind("<FocusIn>", lambda _event: self._apply_topmost())

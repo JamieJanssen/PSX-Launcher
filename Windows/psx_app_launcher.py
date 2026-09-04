@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 PSX App Launcher for Windows
-Version 1.2i
+Version 1.2j
 
 Compact frameless launcher for Aerowinx PSX and related applications.
 Launches configured application paths only; no arbitrary command execution.
@@ -23,7 +23,7 @@ from pathlib import Path
 from tkinter import messagebox
 
 APP_NAME = "PSX App Launcher"
-APP_VERSION = "1.2i"
+APP_VERSION = "1.2j"
 
 BG = "#17191c"
 PANEL = "#22252a"
@@ -37,6 +37,61 @@ RED = "#df6464"
 
 CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
 CREATE_NEW_CONSOLE = getattr(subprocess, "CREATE_NEW_CONSOLE", 0x00000010)
+MONITOR_DEFAULTTONEAREST = 2
+
+
+class _WindowsPoint(ctypes.Structure):
+    _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+
+
+class _WindowsRect(ctypes.Structure):
+    _fields_ = [
+        ("left", ctypes.c_long),
+        ("top", ctypes.c_long),
+        ("right", ctypes.c_long),
+        ("bottom", ctypes.c_long),
+    ]
+
+
+class _WindowsMonitorInfo(ctypes.Structure):
+    _fields_ = [
+        ("cbSize", ctypes.c_uint32),
+        ("rcMonitor", _WindowsRect),
+        ("rcWork", _WindowsRect),
+        ("dwFlags", ctypes.c_uint32),
+    ]
+
+
+def _windows_work_area_for_point(x: int, y: int) -> tuple[int, int, int, int]:
+    """Return the usable work area of the monitor nearest to a screen point."""
+    user32 = ctypes.windll.user32
+    monitor_from_point = user32.MonitorFromPoint
+    monitor_from_point.argtypes = [_WindowsPoint, ctypes.c_uint32]
+    monitor_from_point.restype = ctypes.c_void_p
+    get_monitor_info = user32.GetMonitorInfoW
+    get_monitor_info.argtypes = [
+        ctypes.c_void_p,
+        ctypes.POINTER(_WindowsMonitorInfo),
+    ]
+    get_monitor_info.restype = ctypes.c_int
+
+    monitor = monitor_from_point(
+        _WindowsPoint(int(x), int(y)),
+        MONITOR_DEFAULTTONEAREST,
+    )
+    info = _WindowsMonitorInfo()
+    info.cbSize = ctypes.sizeof(info)
+
+    if monitor and get_monitor_info(monitor, ctypes.byref(info)):
+        work = info.rcWork
+        return work.left, work.top, work.right, work.bottom
+
+    return (
+        0,
+        0,
+        int(user32.GetSystemMetrics(0)),
+        int(user32.GetSystemMetrics(1)),
+    )
 
 
 def app_dir() -> Path:
@@ -726,13 +781,14 @@ class PSXLauncher(tk.Tk):
 
         x = self.config_data.getint("Launcher", "x", fallback=80)
         y = self.config_data.getint("Launcher", "y", fallback=80)
-        self.geometry(f"+{x}+{y}")
+        self.geometry(f"{x:+d}{y:+d}")
 
         self.protocol("WM_DELETE_WINDOW", self.request_close)
         self.bind("<Control-q>", lambda _event: self.request_close())
         self.bind("<Map>", lambda _event: self._apply_topmost())
         self.bind("<FocusIn>", lambda _event: self._apply_topmost())
 
+        self.after_idle(self._ensure_on_screen)
         self.after_idle(self._apply_topmost)
         self.after(200, self._apply_topmost)
         self.after(1000, self._maintain_topmost)
@@ -753,17 +809,50 @@ class PSXLauncher(tk.Tk):
         self._apply_topmost()
         self.after(2000, self._maintain_topmost)
 
+    def _clamp_position(
+        self,
+        x: int,
+        y: int,
+        reference_x: int | None = None,
+        reference_y: int | None = None,
+    ) -> tuple[int, int]:
+        self.update_idletasks()
+        width = max(1, self.winfo_width())
+        height = max(1, self.winfo_height())
+        point_x = reference_x if reference_x is not None else x + width // 2
+        point_y = reference_y if reference_y is not None else y + height // 2
+        left, top, right, bottom = _windows_work_area_for_point(point_x, point_y)
+
+        maximum_x = max(left, right - width)
+        maximum_y = max(top, bottom - height)
+        return (
+            min(max(x, left), maximum_x),
+            min(max(y, top), maximum_y),
+        )
+
+    def _ensure_on_screen(self) -> None:
+        if self._closing or not self.winfo_exists():
+            return
+        x, y = self._clamp_position(self.winfo_x(), self.winfo_y())
+        self.geometry(f"{x:+d}{y:+d}")
+
     def _start_drag(self, event) -> None:
         self._drag_origin_x = event.x_root - self.winfo_x()
         self._drag_origin_y = event.y_root - self.winfo_y()
         self._drag_moved = False
 
     def _drag_window(self, event) -> None:
-        x = event.x_root - self._drag_origin_x
-        y = event.y_root - self._drag_origin_y
-        if abs(x - self.winfo_x()) > 2 or abs(y - self.winfo_y()) > 2:
+        raw_x = event.x_root - self._drag_origin_x
+        raw_y = event.y_root - self._drag_origin_y
+        if abs(raw_x - self.winfo_x()) > 2 or abs(raw_y - self.winfo_y()) > 2:
             self._drag_moved = True
-        self.geometry(f"+{x}+{y}")
+        x, y = self._clamp_position(
+            raw_x,
+            raw_y,
+            reference_x=event.x_root,
+            reference_y=event.y_root,
+        )
+        self.geometry(f"{x:+d}{y:+d}")
 
     def _hamburger_released(self, _event=None) -> None:
         if not self._drag_moved:
@@ -782,6 +871,8 @@ class PSXLauncher(tk.Tk):
         self.mini.pack(side="left", fill="both")
         self.update_idletasks()
         self.geometry("")
+        self.update_idletasks()
+        self._ensure_on_screen()
         self._apply_topmost()
 
     def expand(self) -> None:
@@ -793,6 +884,8 @@ class PSXLauncher(tk.Tk):
         self.content.pack(side="left", fill="both", expand=True)
         self.update_idletasks()
         self.geometry("")
+        self.update_idletasks()
+        self._ensure_on_screen()
         self._apply_topmost()
 
     def _show_nonfatal_error(self, text: str) -> None:

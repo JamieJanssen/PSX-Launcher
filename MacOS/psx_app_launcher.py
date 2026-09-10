@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 PSX Launcher
-Version 1.3d
+Version 1.3e
 
 Compact frameless launcher for Aerowinx PSX and related applications.
 Launches configured application paths only; no command-line execution.
@@ -25,7 +25,7 @@ from pathlib import Path
 from tkinter import messagebox
 
 APP_NAME = "PSX Launcher"
-APP_VERSION = "1.3d"
+APP_VERSION = "1.3e"
 CONFIG_FILENAME = "psx_app_launcher.ini"
 
 BG = "#17191c"
@@ -823,6 +823,7 @@ class UtilityButton(tk.Frame):
 class PSXLauncher(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
+        self.withdraw()
         self.config_data = ensure_config()
         self.items = configured_items(self.config_data)
         self.buttons: dict[str, UtilityButton] = {}
@@ -844,6 +845,16 @@ class PSXLauncher(tk.Tk):
         self.configure(bg=BG)
         self.resizable(False, False)
         self.overrideredirect(True)
+        try:
+            self.tk.call(
+                "::tk::unsupported::MacWindowStyle",
+                "style",
+                self._w,
+                "plain",
+                ("noTitleBar", "texturedSquareCorners"),
+            )
+        except tk.TclError:
+            pass
 
         self.shell = tk.Frame(self, bg=BG, highlightthickness=1, highlightbackground="#30343a")
         self.shell.pack(fill="both", expand=True)
@@ -953,6 +964,9 @@ class PSXLauncher(tk.Tk):
         self.after_idle(self._apply_topmost)
         self.after(200, self._apply_topmost)
         self.after(1000, self._maintain_topmost)
+
+        self.update_idletasks()
+        self.deiconify()
 
     def _window_mapped(self, _event=None) -> None:
         self._apply_topmost()

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 PSX App Launcher for Windows
-Version 1.3
+Version 1.3a
 
 Compact frameless launcher for Aerowinx PSX and related applications.
 Launches configured application paths only; no arbitrary command execution.
@@ -16,6 +16,7 @@ import os
 import re
 import subprocess
 import sys
+import threading
 import time
 import tkinter as tk
 from dataclasses import dataclass
@@ -23,7 +24,7 @@ from pathlib import Path
 from tkinter import messagebox
 
 APP_NAME = "PSX App Launcher"
-APP_VERSION = "1.3"
+APP_VERSION = "1.3a"
 
 BG = "#17191c"
 PANEL = "#22252a"
@@ -37,6 +38,7 @@ RED = "#df6464"
 
 CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
 CREATE_NEW_CONSOLE = getattr(subprocess, "CREATE_NEW_CONSOLE", 0x00000010)
+BELOW_NORMAL_PRIORITY_CLASS = getattr(subprocess, "BELOW_NORMAL_PRIORITY_CLASS", 0x00004000)
 MONITOR_DEFAULTTONEAREST = 2
 ERROR_ALREADY_EXISTS = 183
 SINGLE_INSTANCE_MUTEX = r"Local\JamieJets.PSXLauncher"
@@ -356,7 +358,7 @@ def windows_processes(force: bool = False) -> list[WindowsProcess]:
             encoding="utf-8",
             errors="replace",
             timeout=5,
-            creationflags=CREATE_NO_WINDOW,
+            creationflags=CREATE_NO_WINDOW | BELOW_NORMAL_PRIORITY_CLASS,
         )
         if result.returncode != 0 or not result.stdout.strip():
             _PROCESS_CACHE = (now, [])
@@ -399,8 +401,13 @@ def _contains_casefold(haystack: str, needle: str) -> bool:
     return needle.casefold() in haystack.casefold()
 
 
-def matching_processes(path: Path, detection: str = "") -> list[WindowsProcess]:
-    processes = windows_processes()
+def matching_processes(
+    path: Path,
+    detection: str = "",
+    processes: list[WindowsProcess] | None = None,
+) -> list[WindowsProcess]:
+    if processes is None:
+        processes = windows_processes()
 
     if detection:
         return [
@@ -687,6 +694,10 @@ class PSXLauncher(tk.Tk):
         self._closing = False
         self._menu_open = False
         self._status_after_id: str | None = None
+        self._status_thread: threading.Thread | None = None
+        self._status_result: dict[str, list[tuple[str, bool]]] | None = None
+        self._last_status_check_started = 0.0
+        self._last_running_by_path: dict[str, bool] = {}
 
         self.title(f"{APP_NAME} {APP_VERSION}")
         self.configure(bg=BG)
@@ -822,7 +833,7 @@ class PSXLauncher(tk.Tk):
         self.after_idle(self._apply_topmost)
         self.after(200, self._apply_topmost)
         self.after(1000, self._maintain_topmost)
-        self._schedule_status_poll(500)
+        self._schedule_status_poll(0)
 
     def _apply_topmost(self) -> None:
         if not self.always_on_top or self._closing:
@@ -966,8 +977,10 @@ class PSXLauncher(tk.Tk):
     def _schedule_status_poll(self, delay_ms: int = 5000) -> None:
         if self._closing:
             return
+        elapsed_ms = int((time.monotonic() - self._last_status_check_started) * 1000)
+        delay_ms = max(delay_ms, 5000 - elapsed_ms)
         self._cancel_status_poll()
-        self._status_after_id = self.after(delay_ms, self.refresh_status)
+        self._status_after_id = self.after(max(0, delay_ms), self.refresh_status)
 
     def launch_item(self, item: LauncherItem) -> None:
         try:
@@ -996,12 +1009,12 @@ class PSXLauncher(tk.Tk):
         launched = False
         already_running = False
 
-        windows_processes(force=True)
         for path, hidden, detection in item.paths:
             if not path.exists():
                 errors.append(f"Niet gevonden: {path}")
                 continue
-            if self._is_launch_locked(path) or is_probably_running_path(path, detection):
+            cached_running = self._last_running_by_path.get(self._path_key(path), False)
+            if self._is_launch_locked(path) or cached_running:
                 already_running = True
                 continue
             try:
@@ -1028,21 +1041,72 @@ class PSXLauncher(tk.Tk):
 
     def refresh_status(self) -> None:
         self._status_after_id = None
-        if self._closing or self._menu_open:
+        if self._closing:
+            return
+        if self._menu_open:
+            self._schedule_status_poll(5000)
+            return
+        if self._status_thread is not None and self._status_thread.is_alive():
+            self._schedule_status_poll(5000)
             return
 
-        windows_processes(force=True)
-        aggregate_states: list[str] = []
+        self._last_status_check_started = time.monotonic()
+        self._status_result = None
+        self._status_thread = threading.Thread(
+            target=self._collect_status_results,
+            name="PSXLauncherStatus",
+            daemon=True,
+        )
+        self._status_thread.start()
+        self.after(50, self._poll_status_result)
 
+    def _collect_status_results(self) -> None:
+        processes = windows_processes(force=True)
+        results: dict[str, list[tuple[str, bool]]] = {}
+        for item in self.items:
+            item_results: list[tuple[str, bool]] = []
+            for path, _hidden, detection in item.paths:
+                running = (
+                    (bool(detection) or path.exists())
+                    and bool(matching_processes(path, detection, processes))
+                )
+                item_results.append((self._path_key(path), running))
+            results[item.section] = item_results
+        self._status_result = results
+
+    def _poll_status_result(self) -> None:
+        if self._closing:
+            return
+        thread = self._status_thread
+        if self._status_result is None and thread is not None and thread.is_alive():
+            self.after(50, self._poll_status_result)
+            return
+
+        results = self._status_result or {}
+        self._status_thread = None
+        self._status_result = None
+        self._apply_status_results(results)
+        self._schedule_status_poll(5000)
+
+    def _apply_status_results(
+        self, results: dict[str, list[tuple[str, bool]]]
+    ) -> None:
+        aggregate_states: list[str] = []
         for item in self.items:
             button = self.buttons[item.section]
             states: list[bool] = []
-
-            for path, _hidden, detection in item.paths:
-                running = is_probably_running_path(path, detection)
+            for path_key, running in results.get(item.section, []):
+                self._last_running_by_path[path_key] = running
                 if running:
-                    self.launching_paths.pop(self._path_key(path), None)
-                states.append(running or self._is_launch_locked(path))
+                    self.launching_paths.pop(path_key, None)
+                path = next(
+                    (candidate for candidate, _hidden, _detection in item.paths
+                     if self._path_key(candidate) == path_key),
+                    None,
+                )
+                states.append(
+                    running or (path is not None and self._is_launch_locked(path))
+                )
 
             if states and all(states):
                 state = "running"
@@ -1065,7 +1129,6 @@ class PSXLauncher(tk.Tk):
             mini_colour = GREEN
 
         self.mini_dot.itemconfigure(self.mini_dot_id, fill=mini_colour)
-        self._schedule_status_poll(5000)
 
     def _finish_menu(self) -> None:
         if self._closing:

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 PSX Launcher
-Version 1.3
+Version 1.3a
 
 Compact frameless launcher for Aerowinx PSX and related applications.
 Launches configured application paths only; no command-line execution.
@@ -17,6 +17,7 @@ import plistlib
 import re
 import subprocess
 import sys
+import threading
 import time
 import tkinter as tk
 from dataclasses import dataclass
@@ -24,7 +25,7 @@ from pathlib import Path
 from tkinter import messagebox
 
 APP_NAME = "PSX Launcher"
-APP_VERSION = "1.3"
+APP_VERSION = "1.3a"
 CONFIG_FILENAME = "psx_app_launcher.ini"
 
 BG = "#17191c"
@@ -390,6 +391,114 @@ def mac_app_info(path: Path) -> tuple[str, str, Path | None]:
     return bundle_id, executable, executable_path
 
 
+@dataclass
+class MacProcessSnapshot:
+    bundle_visibility: dict[str, bool]
+    commands: list[str]
+
+
+def collect_mac_process_snapshot() -> MacProcessSnapshot:
+    """Collect all macOS application and command data in two low-priority calls."""
+    bundle_visibility: dict[str, bool] = {}
+    commands: list[str] = []
+
+    script = (
+        'tell application "System Events"\n'
+        'set output to ""\n'
+        'repeat with process_item in application processes\n'
+        'try\n'
+        'set output to output & (bundle identifier of process_item as text) & tab & '
+        '(visible of process_item as text) & linefeed\n'
+        'end try\n'
+        'end repeat\n'
+        'return output\n'
+        'end tell'
+    )
+    try:
+        result = subprocess.run(
+            ["/usr/bin/nice", "-n", "15", "/usr/bin/osascript", "-e", script],
+            capture_output=True,
+            text=True,
+            timeout=4,
+        )
+        if result.returncode == 0:
+            for line in result.stdout.splitlines():
+                bundle_id, separator, visible = line.partition("\t")
+                if not separator:
+                    continue
+                normalized = bundle_id.strip().lower()
+                if normalized:
+                    bundle_visibility[normalized] = (
+                        bundle_visibility.get(normalized, False)
+                        or visible.strip().lower() == "true"
+                    )
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+    try:
+        result = subprocess.run(
+            ["/usr/bin/nice", "-n", "15", "/bin/ps", "-axo", "command="],
+            capture_output=True,
+            text=True,
+            timeout=3,
+        )
+        if result.returncode == 0:
+            commands = [
+                line.strip() for line in result.stdout.splitlines() if line.strip()
+            ]
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+    return MacProcessSnapshot(bundle_visibility, commands)
+
+
+def _mac_snapshot_is_running(
+    path: Path, detection: str, snapshot: MacProcessSnapshot
+) -> bool:
+    if detection:
+        return any(detection in command for command in snapshot.commands)
+    if not path.exists():
+        return False
+
+    if path.suffix.lower() != ".app":
+        try:
+            target = str(path.resolve())
+        except OSError:
+            target = str(path.absolute())
+        return any(
+            command == target or command.startswith(target + " ")
+            for command in snapshot.commands
+        )
+
+    bundle_id, executable, executable_path = mac_app_info(path)
+    normalized_bundle_id = bundle_id.strip().lower()
+    if normalized_bundle_id and normalized_bundle_id not in GENERIC_MAC_BUNDLE_IDS:
+        visible = snapshot.bundle_visibility.get(normalized_bundle_id)
+        if path.stem.strip().lower() == "volanta":
+            return visible is True
+        if visible is not None:
+            return True
+
+    executable_target = str(executable_path) if executable_path else ""
+    bundle_target = str(path)
+    aerowinx_app = _mac_app_contains_aerowinx_jar(bundle_target)
+    for command in snapshot.commands:
+        command_lower = command.lower()
+        if executable_target and (
+            command == executable_target
+            or command.startswith(executable_target + " ")
+            or executable_target in command
+        ):
+            return True
+        if bundle_target in command:
+            return True
+        if aerowinx_app and "java" in command_lower and "aerowinx.jar" in command_lower:
+            return True
+        if executable and command.split(maxsplit=1)[0].endswith("/" + executable):
+            return True
+    return False
+
+
 def _mac_bundle_is_running(bundle_id: str, require_visible: bool = False) -> bool:
     normalized = bundle_id.strip().lower()
     if not normalized or normalized in GENERIC_MAC_BUNDLE_IDS:
@@ -512,8 +621,14 @@ def _process_command_contains(text: str) -> bool:
         return False
 
 
-def is_probably_running_path(path: Path, detection: str = "") -> bool:
+def is_probably_running_path(
+    path: Path,
+    detection: str = "",
+    snapshot: MacProcessSnapshot | None = None,
+) -> bool:
     """Best-effort process check, optionally using literal INI detection text."""
+    if snapshot is not None:
+        return _mac_snapshot_is_running(path, detection, snapshot)
     if detection:
         return _process_command_contains(detection)
 
@@ -719,6 +834,10 @@ class PSXLauncher(tk.Tk):
         self._closing = False
         self._menu_open = False
         self._status_after_id: str | None = None
+        self._status_thread: threading.Thread | None = None
+        self._status_result: dict[str, list[tuple[str, bool]]] | None = None
+        self._last_status_check_started = 0.0
+        self._last_running_by_path: dict[str, bool] = {}
 
         self.title(f"{APP_NAME} {APP_VERSION}")
         self.configure(bg=BG)
@@ -833,7 +952,7 @@ class PSXLauncher(tk.Tk):
         self.after_idle(self._apply_topmost)
         self.after(200, self._apply_topmost)
         self.after(1000, self._maintain_topmost)
-        self._schedule_status_poll(500)
+        self._schedule_status_poll(0)
 
     def _apply_topmost(self) -> None:
         if not self.always_on_top or self._closing:
@@ -933,8 +1052,10 @@ class PSXLauncher(tk.Tk):
     def _schedule_status_poll(self, delay_ms: int = 5000) -> None:
         if self._closing:
             return
+        elapsed_ms = int((time.monotonic() - self._last_status_check_started) * 1000)
+        delay_ms = max(delay_ms, 5000 - elapsed_ms)
         self._cancel_status_poll()
-        self._status_after_id = self.after(delay_ms, self.refresh_status)
+        self._status_after_id = self.after(max(0, delay_ms), self.refresh_status)
 
     def launch_item(self, item: LauncherItem) -> None:
         try:
@@ -967,7 +1088,8 @@ class PSXLauncher(tk.Tk):
             if not path.exists():
                 errors.append(f"Not found: {path}")
                 continue
-            if self._is_launch_locked(path) or is_probably_running_path(path, detection):
+            cached_running = self._last_running_by_path.get(self._path_key(path), False)
+            if self._is_launch_locked(path) or cached_running:
                 already_running = True
                 continue
             try:
@@ -990,18 +1112,69 @@ class PSXLauncher(tk.Tk):
 
     def refresh_status(self) -> None:
         self._status_after_id = None
-        if self._closing or self._menu_open:
+        if self._closing:
             return
+        if self._menu_open:
+            self._schedule_status_poll(5000)
+            return
+        if self._status_thread is not None and self._status_thread.is_alive():
+            self._schedule_status_poll(5000)
+            return
+
+        self._last_status_check_started = time.monotonic()
+        self._status_result = None
+        self._status_thread = threading.Thread(
+            target=self._collect_status_results,
+            name="PSXLauncherStatus",
+            daemon=True,
+        )
+        self._status_thread.start()
+        self.after(50, self._poll_status_result)
+
+    def _collect_status_results(self) -> None:
+        snapshot = collect_mac_process_snapshot()
+        results: dict[str, list[tuple[str, bool]]] = {}
+        for item in self.items:
+            item_results: list[tuple[str, bool]] = []
+            for path, _hidden, detection in item.paths:
+                running = is_probably_running_path(path, detection, snapshot)
+                item_results.append((self._path_key(path), running))
+            results[item.section] = item_results
+        self._status_result = results
+
+    def _poll_status_result(self) -> None:
+        if self._closing:
+            return
+        thread = self._status_thread
+        if self._status_result is None and thread is not None and thread.is_alive():
+            self.after(50, self._poll_status_result)
+            return
+
+        results = self._status_result or {}
+        self._status_thread = None
+        self._status_result = None
+        self._apply_status_results(results)
+        self._schedule_status_poll(5000)
+
+    def _apply_status_results(
+        self, results: dict[str, list[tuple[str, bool]]]
+    ) -> None:
         aggregate_states: list[str] = []
         for item in self.items:
             button = self.buttons[item.section]
             states: list[bool] = []
-
-            for path, hidden, detection in item.paths:
-                running = is_probably_running_path(path, detection)
+            for path_key, running in results.get(item.section, []):
+                self._last_running_by_path[path_key] = running
                 if running:
-                    self.launching_paths.pop(self._path_key(path), None)
-                states.append(running or self._is_launch_locked(path))
+                    self.launching_paths.pop(path_key, None)
+                path = next(
+                    (candidate for candidate, _hidden, _detection in item.paths
+                     if self._path_key(candidate) == path_key),
+                    None,
+                )
+                states.append(
+                    running or (path is not None and self._is_launch_locked(path))
+                )
 
             if states and all(states):
                 state = "running"
@@ -1023,8 +1196,6 @@ class PSXLauncher(tk.Tk):
             else:
                 mini_colour = GREEN
         self.mini_dot.itemconfigure(self.mini_dot_id, fill=mini_colour)
-
-        self._schedule_status_poll(5000)
 
     def _finish_menu(self) -> None:
         if self._closing:

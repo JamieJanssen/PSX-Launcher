@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 PSX Launcher
-Version 1.3b
+Version 1.3c
 
 Compact frameless launcher for Aerowinx PSX and related applications.
 Launches configured application paths only; no command-line execution.
@@ -25,7 +25,7 @@ from pathlib import Path
 from tkinter import messagebox
 
 APP_NAME = "PSX Launcher"
-APP_VERSION = "1.3b"
+APP_VERSION = "1.3c"
 CONFIG_FILENAME = "psx_app_launcher.ini"
 
 BG = "#17191c"
@@ -949,19 +949,10 @@ class PSXLauncher(tk.Tk):
         self.bind("<Map>", lambda _event: self._apply_topmost())
         self.bind("<FocusIn>", lambda _event: self._apply_topmost())
 
-        self.after_idle(self._apply_borderless)
         self.after_idle(self._apply_topmost)
         self.after(200, self._apply_topmost)
         self.after(1000, self._maintain_topmost)
         self._schedule_status_poll(2000)
-
-    def _apply_borderless(self) -> None:
-        if self._closing:
-            return
-        try:
-            self.overrideredirect(True)
-        except tk.TclError:
-            pass
 
     def _apply_topmost(self) -> None:
         if not self.always_on_top or self._closing:

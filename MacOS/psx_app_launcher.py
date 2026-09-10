@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 PSX Launcher
-Version 1.3c
+Version 1.3d
 
 Compact frameless launcher for Aerowinx PSX and related applications.
 Launches configured application paths only; no command-line execution.
@@ -25,7 +25,7 @@ from pathlib import Path
 from tkinter import messagebox
 
 APP_NAME = "PSX Launcher"
-APP_VERSION = "1.3c"
+APP_VERSION = "1.3d"
 CONFIG_FILENAME = "psx_app_launcher.ini"
 
 BG = "#17191c"
@@ -838,6 +838,7 @@ class PSXLauncher(tk.Tk):
         self._status_result: dict[str, list[tuple[str, bool]]] | None = None
         self._last_status_check_started = 0.0
         self._last_running_by_path: dict[str, bool] = {}
+        self._status_poll_started = False
 
         self.title(f"{APP_NAME} {APP_VERSION}")
         self.configure(bg=BG)
@@ -946,13 +947,18 @@ class PSXLauncher(tk.Tk):
 
         self.protocol("WM_DELETE_WINDOW", self.request_close)
         self.bind("<Command-q>", lambda _event: self.request_close())
-        self.bind("<Map>", lambda _event: self._apply_topmost())
+        self.bind("<Map>", self._window_mapped)
         self.bind("<FocusIn>", lambda _event: self._apply_topmost())
 
         self.after_idle(self._apply_topmost)
         self.after(200, self._apply_topmost)
         self.after(1000, self._maintain_topmost)
-        self._schedule_status_poll(2000)
+
+    def _window_mapped(self, _event=None) -> None:
+        self._apply_topmost()
+        if not self._status_poll_started:
+            self._status_poll_started = True
+            self._schedule_status_poll(2000)
 
     def _apply_topmost(self) -> None:
         if not self.always_on_top or self._closing:

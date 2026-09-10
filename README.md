@@ -2,7 +2,14 @@
 
 A compact, frameless launcher for Aerowinx PSX and related applications on Windows and macOS.
 
-## Version 1.3a
+## Current versions
+
+- Windows: 1.3a
+- macOS: 1.3b
+
+macOS 1.3b restores the borderless launcher window after initial window creation and starts the first background status check after two seconds.
+
+## Status monitoring
 
 - Shows whether configured applications are running, including applications started outside the launcher.
 - Performs an initial status check when the launcher starts.

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 PSX Launcher
-Version 1.3e
+Version 1.4
 
 Compact frameless launcher for Aerowinx PSX and related applications.
 Launches configured application paths only; no command-line execution.
@@ -25,7 +25,7 @@ from pathlib import Path
 from tkinter import messagebox
 
 APP_NAME = "PSX Launcher"
-APP_VERSION = "1.3e"
+APP_VERSION = "1.4"
 CONFIG_FILENAME = "psx_app_launcher.ini"
 
 BG = "#17191c"
@@ -774,12 +774,12 @@ class UtilityButton(tk.Frame):
             text=item.label,
             bg=PANEL,
             fg=TEXT,
-            font=("Helvetica Neue", 10, "normal"),
+            font=("Helvetica Neue", 8, "normal"),
             padx=0,
             pady=0,
             anchor="center",
         )
-        self.label.pack(side="left", padx=(0, 10), pady=(5, 7))
+        self.label.pack(side="left", padx=(0, 10), pady=(4, 8))
 
         for widget in (self, self.dot, self.label):
             widget.bind("<Button-1>", self._clicked)
@@ -909,11 +909,11 @@ class PSXLauncher(tk.Tk):
             text="⋯",
             bg=BG,
             fg=MUTED,
-            font=("Helvetica Neue", 12),
+            font=("Helvetica Neue", 8),
             cursor="hand2",
             padx=5,
         )
-        self.settings.grid(row=0, column=len(self.items), padx=(2, 0), sticky="ns")
+        self.settings.grid(row=0, column=len(self.items), padx=(2, 0), pady=(0, 2), sticky="ns")
         self.settings.bind("<Button-1>", self.show_settings_menu)
         self.settings.bind("<Button-2>", self.show_settings_menu)
         self.settings.bind("<Button-3>", self.show_settings_menu)
@@ -942,7 +942,7 @@ class PSXLauncher(tk.Tk):
             text="PSX",
             bg=PANEL,
             fg=TEXT,
-            font=("Helvetica Neue", 10),
+            font=("Helvetica Neue", 8),
             padx=0,
             pady=0,
         )
@@ -1327,7 +1327,7 @@ class PSXLauncher(tk.Tk):
             text=APP_NAME,
             bg=BG,
             fg=TEXT,
-            font=("Helvetica Neue", 12, "bold"),
+            font=("Helvetica Neue", 8, "bold"),
             padx=22,
             pady=0,
         ).pack(pady=(16, 3))
@@ -1336,14 +1336,14 @@ class PSXLauncher(tk.Tk):
             text=f"Version {APP_VERSION}",
             bg=BG,
             fg=MUTED,
-            font=("Helvetica Neue", 10),
+            font=("Helvetica Neue", 8),
         ).pack(pady=(0, 13))
         close_button = tk.Label(
             shell,
             text="Close",
             bg=PANEL,
             fg=TEXT,
-            font=("Helvetica Neue", 10),
+            font=("Helvetica Neue", 8),
             cursor="hand2",
             padx=16,
             pady=6,

@@ -5,9 +5,11 @@ A compact, frameless launcher for Aerowinx PSX and related applications on Windo
 ## Current versions
 
 - Windows: 1.3a
-- macOS: 1.3e
+- macOS: 1.4
 
-macOS 1.3e builds the launcher while hidden, applies the native Tk `plain` window style with `noTitleBar` and `texturedSquareCorners` before the first mapping, and then shows the completed launcher immediately. The first background status check starts two seconds after the window is displayed.
+On macOS, the launcher builds while hidden, applies the native Tk `plain` window style with `noTitleBar` and `texturedSquareCorners` before the first mapping, and then shows the completed launcher immediately. The first background status check starts two seconds after the window is displayed.
+
+macOS 1.4 reduces interface font sizes to 8 pt and adjusts label and settings-control spacing.
 
 ## Status monitoring
 

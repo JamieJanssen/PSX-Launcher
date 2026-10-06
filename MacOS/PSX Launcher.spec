@@ -46,6 +46,7 @@ coll = COLLECT(
 app = BUNDLE(
     coll,
     name='PSX Launcher.app',
+    version='1.4',
     icon='psx.icns',
     bundle_identifier=None,
 )

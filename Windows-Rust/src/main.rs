@@ -11,19 +11,19 @@ mod win;
 use config::{AppConfig, LauncherItem};
 use processes::{inventory, target_is_running};
 use std::mem::{size_of, zeroed};
-use std::path::Path;
 use std::ptr::{null, null_mut};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
-use win::{get_x_lparam, get_y_lparam, loword, rgb, wide};
+use win::{get_x_lparam, get_y_lparam, rgb, wide};
 use windows_sys::Win32::Foundation::*;
 use windows_sys::Win32::Graphics::Gdi::*;
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::System::Threading::{CreateMutexW, ReleaseMutex};
-use windows_sys::Win32::UI::HiDpi::SetProcessDPIAware;
-use windows_sys::Win32::UI::Shell::ShellExecuteW;
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+    ReleaseCapture, SetCapture, TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent,
+};
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
 const APP_NAME: &str = "PSX Launcher";
@@ -491,7 +491,9 @@ impl AppState {
                 &format!("PSX Launcher Rust\nVersion {APP_VERSION}\n\nExperimental native Windows port"),
                 MB_OK | MB_ICONINFORMATION,
             ),
-            CMD_QUIT => unsafe { PostMessageW(self.hwnd, WM_CLOSE, 0, 0) },
+            CMD_QUIT => unsafe {
+                PostMessageW(self.hwnd, WM_CLOSE, 0, 0);
+            },
             _ => {}
         }
     }

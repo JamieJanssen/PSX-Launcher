@@ -42,6 +42,7 @@ const TIMER_STATUS: usize = 1;
 const TIMER_TOPMOST: usize = 2;
 const WM_STATUS_READY: u32 = WM_APP + 1;
 const WM_ACTION_READY: u32 = WM_APP + 2;
+const WM_MOUSE_LEAVE: u32 = 0x02A3;
 
 const CMD_QUIT_ITEM_BASE: u32 = 10_000;
 const CMD_EDIT_INI: u32 = 20_001;
@@ -603,6 +604,7 @@ fn post_action_result(hwnd: HWND, payload: ActionPayload) {
 }
 
 unsafe extern "system" fn window_proc(hwnd: HWND, message_id: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    unsafe {
     if message_id == WM_NCCREATE {
         let create = &*(lparam as *const CREATESTRUCTW);
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, create.lpCreateParams as isize);
@@ -641,7 +643,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message_id: u32, wparam: WPARA
             }
             0
         }
-        WM_MOUSELEAVE => {
+        WM_MOUSE_LEAVE => {
             state.tracking_mouse = false;
             state.set_hover(Region::None);
             0
@@ -724,6 +726,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message_id: u32, wparam: WPARA
             0
         }
         _ => DefWindowProcW(hwnd, message_id, wparam, lparam),
+    }
     }
 }
 

@@ -4,8 +4,12 @@ A compact, frameless launcher for Aerowinx PSX and related applications on Windo
 
 ## Current versions
 
-- Windows: 1.3a
+- Windows (Python): 1.3a
+- Windows (Rust): 2.0.0-alpha.1 — experimental
 - macOS: 1.4
+
+The separate native Rust port lives in [`Windows-Rust/`](Windows-Rust/). The
+existing Python version in `Windows/` remains the stable Windows release.
 
 On macOS, the launcher builds while hidden, applies the native Tk `plain` window style with `noTitleBar` and `texturedSquareCorners` before the first mapping, and then shows the completed launcher immediately. The first background status check starts two seconds after the window is displayed.
 
@@ -27,7 +31,7 @@ On macOS, one low-priority `osascript` snapshot supplies bundle identifiers and 
 
 ## Configuration
 
-Windows stores `psx_app_launcher.ini` beside the launcher.
+The stable Windows launcher and the experimental Rust port store `psx_app_launcher.ini` beside their executable.
 
 macOS stores it at:
 

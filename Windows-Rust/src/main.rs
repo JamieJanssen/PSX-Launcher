@@ -111,6 +111,7 @@ struct AppState {
     expanded_width: i32,
     collapsed: bool,
     hover: Region,
+    menu_open: bool,
     tracking_mouse: bool,
     dragging: bool,
     drag_moved: bool,
@@ -134,6 +135,7 @@ impl AppState {
             expanded_width: HANDLE_WIDTH + SETTINGS_WIDTH + 2,
             collapsed: false,
             hover: Region::None,
+            menu_open: false,
             tracking_mouse: false,
             dragging: false,
             drag_moved: false,
@@ -434,19 +436,22 @@ impl AppState {
         }
         let label = wide("Quit apps");
         unsafe { AppendMenuW(menu, MF_STRING, (CMD_QUIT_ITEM_BASE + index as u32) as usize, label.as_ptr()) };
-        let mut cursor: POINT = unsafe { zeroed() };
-        unsafe { GetCursorPos(&mut cursor) };
+        let mut window_rect: RECT = unsafe { zeroed() };
+        unsafe { GetWindowRect(self.hwnd, &mut window_rect) };
+        let item_rect = self.item_rect(index);
+        self.menu_open = true;
         let command = unsafe {
             TrackPopupMenu(
                 menu,
-                TPM_RETURNCMD | TPM_RIGHTBUTTON,
-                cursor.x,
-                cursor.y,
+                TPM_LEFTALIGN | TPM_TOPALIGN | TPM_RETURNCMD | TPM_RIGHTBUTTON,
+                window_rect.left + item_rect.left,
+                window_rect.bottom,
                 0,
                 self.hwnd,
                 null(),
             ) as u32
         };
+        self.menu_open = false;
         unsafe { DestroyMenu(menu) };
         if command >= CMD_QUIT_ITEM_BASE && command < CMD_QUIT_ITEM_BASE + self.config.items.len() as u32 {
             self.quit_item((command - CMD_QUIT_ITEM_BASE) as usize);
@@ -469,17 +474,19 @@ impl AppState {
         }
         let mut rect: RECT = unsafe { zeroed() };
         unsafe { GetWindowRect(self.hwnd, &mut rect) };
+        self.menu_open = true;
         let command = unsafe {
             TrackPopupMenu(
                 menu,
-                TPM_RETURNCMD | TPM_RIGHTBUTTON,
-                rect.right - SETTINGS_WIDTH,
+                TPM_RIGHTALIGN | TPM_TOPALIGN | TPM_RETURNCMD | TPM_RIGHTBUTTON,
+                rect.right,
                 rect.bottom,
                 0,
                 self.hwnd,
                 null(),
             ) as u32
         };
+        self.menu_open = false;
         unsafe { DestroyMenu(menu) };
         match command {
             CMD_EDIT_INI => {
@@ -678,7 +685,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message_id: u32, wparam: WPARA
                     }
                     state.request_status();
                 }
-                TIMER_TOPMOST if state.config.always_on_top => {
+                TIMER_TOPMOST if state.config.always_on_top && !state.menu_open => {
                     SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
                 }
                 _ => {}

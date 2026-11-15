@@ -3,3 +3,4 @@ Windows/PSX Launcher.spec
 /Windows-Rust/target/
 /MacOS-Rust/target/
 /MacOS-Rust/dist/
+MacOS-Rust/Cargo.lock

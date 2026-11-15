@@ -15,6 +15,21 @@ existing Python version in `../Windows/` remains the stable release.
 - hidden launch flags, process status, context menus and **Quit apps**;
 - one low-priority process inventory at most every five seconds.
 
+## Behavior updates
+
+- Menus use the launcher's dark background, white text and a subtle hover color.
+- Menus close 250 ms after the pointer leaves both the triggering button and menu.
+- App buttons and the collapsed launcher are narrower; text size and height are unchanged.
+- Launch clicks reuse the last background snapshot instead of waiting for a new CIM scan.
+- A 12-second per-path guard prevents repeated clicks from starting duplicates.
+- Cached status can lag external starts/stops by one refresh round.
+- Quit still obtains fresh PIDs, deduplicates matches and verifies the original process
+  handle for up to two seconds after a taskkill error before showing that error.
+- Permission failures remain visible if process exit cannot be confirmed.
+- Windows does not need Unix child reaping. Rust drops the handles returned by
+  Command, and explicit verification handles are closed by an RAII guard.
+- Shortcuts retain their working-directory lookup; that lookup may still add latency.
+
 ## Build
 
 Install Rust with the MSVC toolchain and Microsoft C++ Build Tools, then run:

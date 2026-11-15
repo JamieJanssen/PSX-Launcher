@@ -25,6 +25,7 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     ReleaseCapture, SetCapture, TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
+use windows_sys::Win32::UI::Controls::{DRAWITEMSTRUCT, MEASUREITEMSTRUCT, ODT_MENU, ODS_SELECTED};
 
 const APP_NAME: &str = "PSX Launcher";
 const APP_VERSION: &str = "2.0.0-alpha.1";
@@ -34,12 +35,13 @@ const MUTEX_NAME: &str = "Local\\JamieJets.PSXLauncher";
 const BAR_HEIGHT: i32 = 34;
 const HANDLE_WIDTH: i32 = 34;
 const SETTINGS_WIDTH: i32 = 34;
-const MINI_WIDTH: i32 = 76;
-const ITEM_MIN_WIDTH: i32 = 88;
+const MINI_WIDTH: i32 = 62;
+const ITEM_MIN_WIDTH: i32 = 74;
 const ITEM_GAP: i32 = 2;
 
 const TIMER_STATUS: usize = 1;
 const TIMER_TOPMOST: usize = 2;
+const TIMER_MENU: usize = 3;
 const WM_STATUS_READY: u32 = WM_APP + 1;
 const WM_ACTION_READY: u32 = WM_APP + 2;
 const WM_MOUSE_LEAVE: u32 = 0x02A3;
@@ -112,6 +114,9 @@ struct AppState {
     collapsed: bool,
     hover: Region,
     menu_open: bool,
+    active_menu: HMENU,
+    menu_anchor: RECT,
+    menu_left_at: Option<Instant>,
     tracking_mouse: bool,
     dragging: bool,
     drag_moved: bool,
@@ -136,6 +141,9 @@ impl AppState {
             collapsed: false,
             hover: Region::None,
             menu_open: false,
+            active_menu: 0,
+            menu_anchor: RECT { left: 0, top: 0, right: 0, bottom: 0 },
+            menu_left_at: None,
             tracking_mouse: false,
             dragging: false,
             drag_moved: false,
@@ -196,7 +204,7 @@ impl AppState {
             unsafe {
                 GetTextExtentPoint32W(hdc, text.as_ptr(), text.len().saturating_sub(1) as i32, &mut size);
             }
-            self.item_widths[index] = ITEM_MIN_WIDTH.max(size.cx + 48);
+            self.item_widths[index] = ITEM_MIN_WIDTH.max(size.cx + 35);
         }
         unsafe {
             SelectObject(hdc, previous);
@@ -429,17 +437,65 @@ impl AppState {
         });
     }
 
+    fn begin_menu(&mut self, menu: HMENU, anchor: RECT) -> HBRUSH {
+        let brush = unsafe { CreateSolidBrush(BG) };
+        let mut info: MENUINFO = unsafe { zeroed() };
+        info.cbSize = size_of::<MENUINFO>() as u32;
+        info.fMask = MIM_BACKGROUND;
+        info.hbrBack = brush;
+        unsafe { SetMenuInfo(menu, &info); SetTimer(self.hwnd, TIMER_MENU, 50, None); }
+        self.menu_open = true;
+        self.active_menu = menu;
+        self.menu_anchor = anchor;
+        self.menu_left_at = None;
+        brush
+    }
+
+    fn end_menu(&mut self) {
+        unsafe { KillTimer(self.hwnd, TIMER_MENU); }
+        self.menu_open = false;
+        self.active_menu = 0;
+        self.menu_left_at = None;
+    }
+
+    fn check_menu_pointer(&mut self) {
+        if !self.menu_open { return; }
+        let mut point: POINT = unsafe { zeroed() };
+        unsafe { GetCursorPos(&mut point); }
+        let mut inside = contains_point(&self.menu_anchor, point);
+        let count = unsafe { GetMenuItemCount(self.active_menu) };
+        for index in 0..count.max(0) {
+            let mut rect: RECT = unsafe { zeroed() };
+            if unsafe { GetMenuItemRect(0, self.active_menu, index as u32, &mut rect) } != 0 {
+                // Include the small native popup border between menu items.
+                rect.left -= 4; rect.top -= 4; rect.right += 4; rect.bottom += 4;
+                inside |= contains_point(&rect, point);
+            }
+        }
+        if inside {
+            self.menu_left_at = None;
+        } else if self.menu_left_at.get_or_insert_with(Instant::now).elapsed()
+            >= Duration::from_millis(250) {
+            unsafe { EndMenu(); }
+        }
+    }
+
     fn show_item_menu(&mut self, index: usize) {
         let menu = unsafe { CreatePopupMenu() };
         if menu == 0 {
             return;
         }
         let label = wide("Quit apps");
-        unsafe { AppendMenuW(menu, MF_STRING, (CMD_QUIT_ITEM_BASE + index as u32) as usize, label.as_ptr()) };
+        unsafe { AppendMenuW(menu, MF_OWNERDRAW, (CMD_QUIT_ITEM_BASE + index as u32) as usize, label.as_ptr()) };
         let mut window_rect: RECT = unsafe { zeroed() };
         unsafe { GetWindowRect(self.hwnd, &mut window_rect) };
         let item_rect = self.item_rect(index);
-        self.menu_open = true;
+        let brush = self.begin_menu(menu, RECT {
+            left: window_rect.left + item_rect.left,
+            top: window_rect.top,
+            right: window_rect.left + item_rect.right,
+            bottom: window_rect.bottom,
+        });
         let command = unsafe {
             TrackPopupMenu(
                 menu,
@@ -451,8 +507,8 @@ impl AppState {
                 null(),
             ) as u32
         };
-        self.menu_open = false;
-        unsafe { DestroyMenu(menu) };
+        self.end_menu();
+        unsafe { DestroyMenu(menu); DeleteObject(brush); };
         if command >= CMD_QUIT_ITEM_BASE && command < CMD_QUIT_ITEM_BASE + self.config.items.len() as u32 {
             self.quit_item((command - CMD_QUIT_ITEM_BASE) as usize);
         }
@@ -467,14 +523,17 @@ impl AppState {
         let about = wide(&format!("About ({APP_VERSION})"));
         let quit = wide("Quit");
         unsafe {
-            AppendMenuW(menu, MF_STRING, CMD_EDIT_INI as usize, edit.as_ptr());
-            AppendMenuW(menu, MF_STRING, CMD_ABOUT as usize, about.as_ptr());
+            AppendMenuW(menu, MF_OWNERDRAW, CMD_EDIT_INI as usize, edit.as_ptr());
+            AppendMenuW(menu, MF_OWNERDRAW, CMD_ABOUT as usize, about.as_ptr());
             AppendMenuW(menu, MF_SEPARATOR, 0, null());
-            AppendMenuW(menu, MF_STRING, CMD_QUIT as usize, quit.as_ptr());
+            AppendMenuW(menu, MF_OWNERDRAW, CMD_QUIT as usize, quit.as_ptr());
         }
         let mut rect: RECT = unsafe { zeroed() };
         unsafe { GetWindowRect(self.hwnd, &mut rect) };
-        self.menu_open = true;
+        let brush = self.begin_menu(menu, RECT {
+            left: rect.right - SETTINGS_WIDTH, top: rect.top,
+            right: rect.right, bottom: rect.bottom,
+        });
         let command = unsafe {
             TrackPopupMenu(
                 menu,
@@ -486,8 +545,8 @@ impl AppState {
                 null(),
             ) as u32
         };
-        self.menu_open = false;
-        unsafe { DestroyMenu(menu) };
+        self.end_menu();
+        unsafe { DestroyMenu(menu); DeleteObject(brush); };
         match command {
             CMD_EDIT_INI => {
                 if let Err(error) = launch::shell_execute(&self.config.path, self.config.path.parent(), false) {
@@ -626,6 +685,33 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message_id: u32, wparam: WPARA
     let state = &mut *pointer;
 
     match message_id {
+        WM_MEASUREITEM => {
+            let measure = &mut *(lparam as *mut MEASUREITEMSTRUCT);
+            if measure.CtlType == ODT_MENU {
+                measure.itemHeight = 28;
+                measure.itemWidth = if measure.itemID >= CMD_QUIT_ITEM_BASE && measure.itemID < CMD_EDIT_INI { 112 } else { 200 };
+                1
+            } else { DefWindowProcW(hwnd, message_id, wparam, lparam) }
+        }
+        WM_DRAWITEM => {
+            let draw = &*(lparam as *const DRAWITEMSTRUCT);
+            if draw.CtlType == ODT_MENU {
+                fill(draw.hDC, &draw.rcItem, if draw.itemState & ODS_SELECTED != 0 { PANEL_HOVER } else { BG });
+                let label = match draw.itemID {
+                    CMD_EDIT_INI => "Edit INI".to_string(),
+                    CMD_ABOUT => format!("About ({APP_VERSION})"),
+                    CMD_QUIT => "Quit".to_string(),
+                    _ => "Quit apps".to_string(),
+                };
+                let mut rect = draw.rcItem; rect.left += 8;
+                draw_text(draw.hDC, state.font, &label, rect, TEXT, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+                1
+            } else { DefWindowProcW(hwnd, message_id, wparam, lparam) }
+        }
+        WM_ACTIVATEAPP if wparam == 0 => {
+            if state.menu_open { EndMenu(); }
+            0
+        }
         WM_CREATE => 0,
         WM_PAINT => {
             state.paint();
@@ -677,6 +763,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message_id: u32, wparam: WPARA
         }
         WM_TIMER => {
             match wparam {
+                TIMER_MENU => state.check_menu_pointer(),
                 TIMER_STATUS => {
                     if state.first_status_timer {
                         KillTimer(hwnd, TIMER_STATUS);
@@ -725,6 +812,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message_id: u32, wparam: WPARA
         WM_DESTROY => {
             KillTimer(hwnd, TIMER_STATUS);
             KillTimer(hwnd, TIMER_TOPMOST);
+            KillTimer(hwnd, TIMER_MENU);
             if state.font != 0 {
                 DeleteObject(state.font);
                 state.font = 0;
@@ -826,6 +914,11 @@ fn main() {
         ReleaseMutex(mutex);
         CloseHandle(mutex);
     }
+}
+
+fn contains_point(rect: &RECT, point: POINT) -> bool {
+    point.x >= rect.left && point.x < rect.right
+        && point.y >= rect.top && point.y < rect.bottom
 }
 
 fn fill(hdc: HDC, rect: &RECT, colour: u32) {

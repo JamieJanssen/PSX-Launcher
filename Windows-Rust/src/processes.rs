@@ -2,6 +2,7 @@ use crate::config::LaunchTarget;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::os::windows::process::CommandExt;
 use windows_sys::Win32::System::Threading::{BELOW_NORMAL_PRIORITY_CLASS, CREATE_NO_WINDOW};
 
@@ -11,6 +12,16 @@ pub struct WindowsProcess {
     pub name: String,
     pub executable_path: String,
     pub command_line: String,
+}
+
+static PROCESS_CACHE: OnceLock<Mutex<Arc<Vec<WindowsProcess>>>> = OnceLock::new();
+
+fn process_cache() -> &'static Mutex<Arc<Vec<WindowsProcess>>> {
+    PROCESS_CACHE.get_or_init(|| Mutex::new(Arc::new(Vec::new())))
+}
+
+pub fn cached_inventory() -> Arc<Vec<WindowsProcess>> {
+    Arc::clone(&process_cache().lock().unwrap_or_else(|e| e.into_inner()))
 }
 
 pub fn inventory() -> Vec<WindowsProcess> {
@@ -45,7 +56,7 @@ pub fn inventory() -> Vec<WindowsProcess> {
         _ => Vec::new(),
     };
 
-    entries
+    let processes: Vec<WindowsProcess> = entries
         .into_iter()
         .filter_map(|entry| {
             let pid = entry.get("ProcessId")?.as_u64()? as u32;
@@ -56,7 +67,9 @@ pub fn inventory() -> Vec<WindowsProcess> {
                 command_line: json_string(entry.get("CommandLine")),
             })
         })
-        .collect()
+        .collect();
+    *process_cache().lock().unwrap_or_else(|e| e.into_inner()) = Arc::new(processes.clone());
+    processes
 }
 
 fn json_string(value: Option<&Value>) -> String {
@@ -109,7 +122,7 @@ pub fn target_is_running(target: &LaunchTarget, processes: &[WindowsProcess]) ->
             .unwrap_or_default();
         return processes
             .iter()
-            .any(|process| process.name.eq_ignore_ascii_case(filename));
+            .any(|process| process.executable_path.is_empty() && process.name.eq_ignore_ascii_case(filename));
     }
 
     processes.iter().any(|process| {
@@ -154,7 +167,7 @@ pub fn matching_processes<'a>(
             .unwrap_or_default();
         return processes
             .iter()
-            .filter(|process| process.name.eq_ignore_ascii_case(filename))
+            .filter(|process| process.executable_path.is_empty() && process.name.eq_ignore_ascii_case(filename))
             .collect();
     }
 
@@ -170,5 +183,44 @@ fn normalized_path(path: &Path) -> String {
 }
 
 fn normalized_text(value: &str) -> String {
-    value.replace('/', "\\").to_lowercase()
+    let normalized = value.replace('/', "\\").to_lowercase();
+    normalized.strip_prefix("\\\\?\\").unwrap_or(&normalized).to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn canonical_windows_prefix_matches_inventory_path() {
+        assert_eq!(normalized_text(r"\\?\D:\Games\SimLink.exe"), normalized_text(r"D:\Games\SimLink.exe"));
+    }
+
+    #[test]
+    fn quit_does_not_match_another_known_executable_with_same_name() {
+        let target = LaunchTarget {
+            path: PathBuf::from(r"Q:\PSXLauncherTest\first\bridge.exe"),
+            hidden: false,
+            detection: String::new(),
+        };
+        let processes = vec![WindowsProcess {
+            pid: 99, name: "bridge.exe".into(),
+            executable_path: r"Q:\PSXLauncherTest\other\bridge.exe".into(),
+            command_line: String::new(),
+        }];
+        assert!(matching_processes(&target, &processes).is_empty());
+    }
+
+    #[test]
+    fn custom_detection_still_matches_command_line() {
+        let target = LaunchTarget {
+            path: PathBuf::from("Aerowinx.jar"), hidden: false,
+            detection: "-jar Aerowinx.jar".into(),
+        };
+        let processes = vec![WindowsProcess {
+            pid: 42, name: "java.exe".into(), executable_path: String::new(),
+            command_line: "java -jar Aerowinx.jar".into(),
+        }];
+        assert_eq!(matching_processes(&target, &processes).len(), 1);
+    }
 }

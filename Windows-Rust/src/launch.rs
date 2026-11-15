@@ -1,7 +1,12 @@
 use crate::config::{LaunchTarget, LauncherItem};
-use crate::processes::{inventory, matching_processes};
+use crate::processes::{cached_inventory, inventory, matching_processes};
 use crate::win::wide;
 use std::ffi::OsString;
+use std::collections::{HashMap, HashSet};
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
+use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, ERROR_INVALID_PARAMETER, HANDLE, WAIT_OBJECT_0};
+use windows_sys::Win32::System::Threading::{OpenProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::os::windows::process::CommandExt;
@@ -9,12 +14,17 @@ use windows_sys::Win32::System::Threading::{CREATE_NEW_CONSOLE, CREATE_NO_WINDOW
 use windows_sys::Win32::UI::Shell::ShellExecuteW;
 use windows_sys::Win32::UI::WindowsAndMessaging::{SW_HIDE, SW_SHOWNORMAL};
 
+static PENDING: OnceLock<Mutex<HashMap<PathBuf, Instant>>> = OnceLock::new();
+fn pending() -> &'static Mutex<HashMap<PathBuf, Instant>> {
+    PENDING.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
 pub fn launch_item(item: &LauncherItem) -> Result<(), String> {
     if item.targets.is_empty() {
         return Err("Nothing has been configured for this button.".to_string());
     }
 
-    let processes = inventory();
+    let processes = cached_inventory();
     let mut errors = Vec::new();
     for target in &item.targets {
         if !target.path.exists() {
@@ -24,12 +34,21 @@ pub fn launch_item(item: &LauncherItem) -> Result<(), String> {
         if crate::processes::target_is_running(target, &processes) {
             continue;
         }
+        let path_key = target.path.canonicalize().unwrap_or_else(|_| target.path.clone());
+        {
+            let mut pending = pending().lock().unwrap_or_else(|e| e.into_inner());
+            let now = Instant::now();
+            pending.retain(|_, until| *until > now);
+            if pending.contains_key(&path_key) { continue; }
+            pending.insert(path_key.clone(), now + Duration::from_secs(12));
+        }
         let result = if item.section.eq_ignore_ascii_case("psx") && target.path.is_dir() {
             launch_psx(&target.path, target.hidden)
         } else {
             launch_path(target)
         };
         if let Err(error) = result {
+            pending().lock().unwrap_or_else(|e| e.into_inner()).remove(&path_key);
             errors.push(error);
         }
     }
@@ -189,13 +208,32 @@ pub fn shell_execute(path: &Path, directory: Option<&Path>, hidden: bool) -> Res
     }
 }
 
+// Retain the process handle across taskkill to verify the same process, even
+// if Windows reuses its PID. Drop releases the kernel handle in every branch.
+struct ProcessHandle(HANDLE);
+impl Drop for ProcessHandle {
+    fn drop(&mut self) { unsafe { CloseHandle(self.0); } }
+}
+
 pub fn quit_item(item: &LauncherItem) -> Result<(), String> {
+    // Quit uses a fresh inventory so it never targets a stale cached PID.
     let processes = inventory();
     let own_pid = std::process::id();
     let mut errors = Vec::new();
+    let mut seen = HashSet::new();
     for target in &item.targets {
+        let key = target.path.canonicalize().unwrap_or_else(|_| target.path.clone());
+        pending().lock().unwrap_or_else(|e| e.into_inner()).remove(&key);
         for process in matching_processes(target, &processes) {
-            if process.pid == 0 || process.pid == own_pid {
+            if process.pid == 0 || process.pid == own_pid || !seen.insert(process.pid) {
+                continue;
+            }
+            let raw_handle = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, process.pid) };
+            if raw_handle == 0 && unsafe { GetLastError() } == ERROR_INVALID_PARAMETER {
+                continue; // Already exited, possibly via another target's process tree.
+            }
+            let handle = (raw_handle != 0).then(|| ProcessHandle(raw_handle));
+            if handle.as_ref().is_some_and(|h| unsafe { WaitForSingleObject(h.0, 0) } == WAIT_OBJECT_0) {
                 continue;
             }
             let pid = process.pid.to_string();
@@ -203,17 +241,25 @@ pub fn quit_item(item: &LauncherItem) -> Result<(), String> {
                 .args(["/PID", &pid, "/T", "/F"])
                 .creation_flags(CREATE_NO_WINDOW)
                 .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status();
-            if !matches!(result, Ok(status) if status.success()) {
-                errors.push(format!("Cannot stop PID {} ({})", process.pid, process.name));
+                .output();
+            match result {
+                Ok(output) if output.status.success() => {}
+                other => {
+                    // An error is harmless only if this exact process has exited.
+                    let stopped = handle.as_ref().is_some_and(|h| unsafe {
+                        WaitForSingleObject(h.0, 2000) == WAIT_OBJECT_0
+                    });
+                    if !stopped {
+                        let detail = match other {
+                            Ok(output) => format!("{} {}", String::from_utf8_lossy(&output.stderr).trim(),
+                                String::from_utf8_lossy(&output.stdout).trim()),
+                            Err(error) => error.to_string(),
+                        };
+                        errors.push(format!("Cannot stop PID {} ({}):\n{}", process.pid, process.name, detail.trim()));
+                    }
+                }
             }
         }
     }
-    if errors.is_empty() {
-        Ok(())
-    } else {
-        Err(errors.join("\n"))
-    }
+    if errors.is_empty() { Ok(()) } else { Err(errors.join("\n")) }
 }

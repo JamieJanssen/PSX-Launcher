@@ -36,7 +36,7 @@ enum Event{Status(Vec<State>),Action(usize,bool,Result<(),String>)}
 
 struct LauncherApp{
     config:AppConfig,status:Vec<State>,locked:Vec<Option<Instant>>,busy:Vec<bool>,widths:Vec<f32>,expanded:f32,collapsed:bool,
-    menu:Option<Menu>,tx:Sender<Event>,rx:Receiver<Event>,status_busy:bool,next_status:Instant,last_pos:Pos2,
+    menu_focus_requested:bool,menu_had_focus:bool,menu:Option<Menu>,tx:Sender<Event>,rx:Receiver<Event>,status_busy:bool,next_status:Instant,last_pos:Pos2,
 }
 
 impl LauncherApp{
@@ -44,7 +44,7 @@ impl LauncherApp{
         let widths:Vec<_>=config.items.iter().map(|item|(52.0+item.label.chars().count() as f32*6.5).max(72.0)).collect();
         let expanded=HANDLE+SETTINGS+widths.iter().sum::<f32>()+2.0*widths.len().saturating_sub(1) as f32;
         let count=config.items.len(); let x=config.x as f32; let y=config.y as f32;
-        Self{config,status:vec![State::Off;count],locked:vec![None;count],busy:vec![false;count],widths,expanded,collapsed:false,menu:None,tx,rx,status_busy:false,next_status:Instant::now()+Duration::from_secs(2),last_pos:Pos2::new(x,y)}
+        Self{config,status:vec![State::Off;count],locked:vec![None;count],busy:vec![false;count],widths,expanded,collapsed:false,menu_focus_requested:false,menu_had_focus:false,menu:None,tx,rx,status_busy:false,next_status:Instant::now()+Duration::from_secs(2),last_pos:Pos2::new(x,y)}
     }
     fn process_events(&mut self){
         while let Ok(event)=self.rx.try_recv(){match event{
@@ -71,7 +71,17 @@ impl LauncherApp{
                 Menu::About(_)=>{ui.vertical_centered(|ui|{ui.label(egui::RichText::new("PSX Launcher").color(TEXT).strong());ui.label(egui::RichText::new(format!("Version {VERSION}")).color(MUTED));if menu_button(ui, "Close").clicked(){close=true;}});}
             }
             });
-            if popup.input(|i| i.viewport().close_requested()) {
+            if !self.menu_focus_requested {
+                popup.send_viewport_cmd(ViewportCommand::Focus);
+                self.menu_focus_requested = true;
+            }
+            let focused = popup.input(|i| i.viewport().focused);
+            if focused == Some(true) {
+                self.menu_had_focus = true;
+            }
+            if (self.menu_had_focus && focused == Some(false))
+                || popup.input(|i| i.key_pressed(egui::Key::Escape))
+                || popup.input(|i| i.viewport().close_requested()) {
                 close = true;
             }
         });
@@ -81,6 +91,14 @@ impl LauncherApp{
 
 impl eframe::App for LauncherApp{
     fn update(&mut self,ctx:&egui::Context,_frame:&mut eframe::Frame){
+        if self.menu.is_some() && ctx.input(|i| i.pointer.any_pressed() || i.key_pressed(egui::Key::Escape)) {
+            ctx.send_viewport_cmd_to(ViewportId::from_hash_of("psx-launcher-popup"), ViewportCommand::Close);
+            self.menu = None;
+        }
+        if self.menu.is_none() {
+            self.menu_focus_requested = false;
+            self.menu_had_focus = false;
+        }
         self.process_events();if Instant::now()>=self.next_status{self.request_status();self.next_status=Instant::now()+Duration::from_secs(5);}
         if let Some(pos)=ctx.input(|i|i.viewport().outer_rect.map(|r|r.min)){self.last_pos=pos;}
         egui::CentralPanel::default().frame(egui::Frame::NONE.fill(BG).inner_margin(egui::Margin::same(1))).show(ctx,|ui|{

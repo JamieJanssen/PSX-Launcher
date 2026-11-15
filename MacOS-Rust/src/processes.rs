@@ -99,11 +99,17 @@ pub fn quit_item(item:&LauncherItem)->Result<(),String> {
                 );
                 match Command::new("/usr/bin/osascript").args(["-e", &script]).output() {
                     Ok(output) if output.status.success() => {}
-                    Ok(output) => errors.push(format!(
-                        "Cannot quit {}:\n{}",
-                        target.path.display(),
-                        String::from_utf8_lossy(&output.stderr).trim(),
-                    )),
+                    Ok(output) => {
+                        // Some applications report cancellation while completing Quit.
+                        // Suppress the original error only after a positive exit check.
+                        if !confirm_app_stopped(&escaped) {
+                            errors.push(format!(
+                                "Cannot quit {}:\n{}",
+                                target.path.display(),
+                                String::from_utf8_lossy(&output.stderr).trim(),
+                            ));
+                        }
+                    }
                     Err(error) => errors.push(format!(
                         "Cannot quit {}: {error}", target.path.display(),
                     )),
@@ -112,6 +118,29 @@ pub fn quit_item(item:&LauncherItem)->Result<(),String> {
         } else { terminate_exact(&target.path); }
     }
     if errors.is_empty(){Ok(())}else{Err(errors.join("\n"))}
+}
+
+/// Runs only after a failed Quit, on the existing action worker thread.
+/// One verifier process allows two seconds for asynchronous shutdown; a failed
+/// or unexpected response is never treated as proof that the app has stopped.
+fn confirm_app_stopped(escaped_bundle_id: &str) -> bool {
+    let script = format!(
+        "repeat 8 times\n\
+         delay 0.25\n\
+         if not (application id \"{escaped_bundle_id}\" is running) then\n\
+         return true\n\
+         end if\n\
+         end repeat\n\
+         return false"
+    );
+    match Command::new("/usr/bin/nice")
+        .args(["-n", "15", "/usr/bin/osascript", "-e", &script])
+        .output()
+    {
+        Ok(output) => output.status.success()
+            && String::from_utf8_lossy(&output.stdout).trim() == "true",
+        Err(_) => false,
+    }
 }
 
 fn terminate_exact(path:&Path) {

@@ -90,8 +90,22 @@ pub fn quit_item(item:&LauncherItem)->Result<(),String> {
             let(id,_,exe)=app_info(&target.path);
             if !id.is_empty()&&!GENERIC_IDS.contains(&id.to_lowercase().as_str()) {
                 let escaped=id.replace('\\',"\\\\").replace('"',"\\\"");
-                let script=format!("tell application \"System Events\" to tell (first application process whose bundle identifier is \"{escaped}\") to quit");
-                if Command::new("/usr/bin/osascript").args(["-e",&script]).stdout(Stdio::null()).stderr(Stdio::null()).status().is_err(){errors.push(format!("Cannot quit {}",target.path.display()));}
+                // Address the application itself, not a System Events process object.
+                // The running guard prevents Quit from launching an app that is closed.
+                let script = format!(
+                    "if application id \"{escaped}\" is running then\n tell application id \"{escaped}\" to quit\nend if"
+                );
+                match Command::new("/usr/bin/osascript").args(["-e", &script]).output() {
+                    Ok(output) if output.status.success() => {}
+                    Ok(output) => errors.push(format!(
+                        "Cannot quit {}:\n{}",
+                        target.path.display(),
+                        String::from_utf8_lossy(&output.stderr).trim(),
+                    )),
+                    Err(error) => errors.push(format!(
+                        "Cannot quit {}: {error}", target.path.display(),
+                    )),
+                }
             } else { terminate_exact(&exe); }
         } else { terminate_exact(&target.path); }
     }

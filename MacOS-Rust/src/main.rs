@@ -62,13 +62,13 @@ impl LauncherApp{
     }
     fn show_menu(&mut self,ctx:&egui::Context){
         let Some(menu)=self.menu else{return;};let origin=ctx.input(|i|i.viewport().outer_rect.map(|r|r.min).unwrap_or(self.last_pos));
-        let(x,size)=match menu{Menu::Item(_,x)=>(x,Vec2::new(112.0,32.0)),Menu::Settings(x)=>(x-112.0+SETTINGS,Vec2::new(112.0,92.0)),Menu::About(x)=>(x-70.0,Vec2::new(210.0,118.0))};
+        let(x,size)=match menu{Menu::Item(_,x)=>(x,Vec2::new(112.0,32.0)),Menu::Settings(x)=>(x-188.0+SETTINGS,Vec2::new(188.0,94.0)),Menu::About(x)=>(x-70.0,Vec2::new(210.0,118.0))};
         let mut close=false;let mut action=None;let id=ViewportId::from_hash_of("psx-launcher-popup");
         ctx.show_viewport_immediate(id,egui::ViewportBuilder::default().with_title("PSX Launcher").with_decorations(false).with_always_on_top().with_taskbar(false).with_resizable(false).with_inner_size(size).with_position(origin+Vec2::new(x,HEIGHT)),|popup,_|{
             egui::CentralPanel::default().frame(egui::Frame::NONE.fill(BG).inner_margin(egui::Margin::same(5))).show(popup,|ui|{match menu{
-                Menu::Item(index,_)=>{if ui.button("Quit apps").clicked(){action=Some((index,true));close=true;}},
-                Menu::Settings(_)=>{if ui.button("Edit INI").clicked(){let _=Command::new("/usr/bin/open").arg(&self.config.path).spawn();close=true;}if ui.button(format!("About ({VERSION})")).clicked(){self.menu=Some(Menu::About(x));}if ui.button("Quit").clicked(){popup.send_viewport_cmd(ViewportCommand::Close);ctx.send_viewport_cmd(ViewportCommand::Close);}},
-                Menu::About(_)=>{ui.vertical_centered(|ui|{ui.label(egui::RichText::new("PSX Launcher").color(TEXT).strong());ui.label(egui::RichText::new(format!("Version {VERSION}")).color(MUTED));if ui.button("Close").clicked(){close=true;}});}
+                Menu::Item(index,_)=>{if menu_button(ui, "Quit apps").clicked(){action=Some((index,true));close=true;}},
+                Menu::Settings(_)=>{if menu_button(ui, "Edit INI").clicked(){let _=Command::new("/usr/bin/open").arg(&self.config.path).spawn();close=true;}if menu_button(ui, &format!("About ({VERSION})")).clicked(){self.menu=Some(Menu::About(x));}if menu_button(ui, "Quit").clicked(){popup.send_viewport_cmd(ViewportCommand::Close);ctx.send_viewport_cmd(ViewportCommand::Close);}},
+                Menu::About(_)=>{ui.vertical_centered(|ui|{ui.label(egui::RichText::new("PSX Launcher").color(TEXT).strong());ui.label(egui::RichText::new(format!("Version {VERSION}")).color(MUTED));if menu_button(ui, "Close").clicked(){close=true;}});}
             }
             });
             if popup.input(|i| i.viewport().close_requested()) {
@@ -86,11 +86,25 @@ impl eframe::App for LauncherApp{
         egui::CentralPanel::default().frame(egui::Frame::NONE.fill(BG).inner_margin(egui::Margin::same(1))).show(ctx,|ui|{
             ui.spacing_mut().item_spacing=Vec2::new(2.0,0.0);ui.horizontal(|ui|{
                 if self.collapsed{let(rect,response)=ui.allocate_exact_size(Vec2::new(MINI-2.0,HEIGHT-2.0),Sense::click_and_drag());ui.painter().rect_filled(rect,0.0,if response.hovered(){HOVER}else{PANEL});ui.painter().circle_filled(Pos2::new(rect.left()+12.0,rect.center().y),4.0,self.status.iter().find(|s|**s!=State::Off).copied().unwrap_or(State::Off).color());ui.painter().text(Pos2::new(rect.left()+23.0,rect.center().y-1.0),egui::Align2::LEFT_CENTER,"PSX",FontId::proportional(11.0),TEXT);if response.drag_started(){ctx.send_viewport_cmd(ViewportCommand::StartDrag);}if response.clicked(){self.collapsed=false;ctx.send_viewport_cmd(ViewportCommand::InnerSize(Vec2::new(self.expanded,HEIGHT)));}}
-                else{let(rect,response)=ui.allocate_exact_size(Vec2::new(HANDLE-2.0,HEIGHT-2.0),Sense::click_and_drag());for y in[-6.0,0.0,6.0]{ui.painter().line_segment([Pos2::new(rect.left()+6.0,rect.center().y+y),Pos2::new(rect.right()-6.0,rect.center().y+y)],egui::Stroke::new(2.0,if response.hovered(){TEXT}else{MUTED}));}if response.drag_started(){ctx.send_viewport_cmd(ViewportCommand::StartDrag);}if response.clicked(){self.collapsed=true;ctx.send_viewport_cmd(ViewportCommand::InnerSize(Vec2::new(MINI,HEIGHT)));}for index in 0..self.config.items.len(){self.draw_item(ui,index);}let(rect,response)=ui.allocate_exact_size(Vec2::new(SETTINGS-2.0,HEIGHT-2.0),Sense::click());ui.painter().text(rect.center()+Vec2::new(0.0,-2.0),egui::Align2::CENTER_CENTER,"⋯",FontId::proportional(12.0),if response.hovered(){TEXT}else{MUTED});if response.clicked()||response.secondary_clicked(){self.menu=Some(Menu::Settings(rect.left()));}}
+                else{let(rect,response)=ui.allocate_exact_size(Vec2::new(HANDLE-2.0,HEIGHT-2.0),Sense::click_and_drag());for y in[-6.0,0.0,6.0]{ui.painter().line_segment([Pos2::new(rect.left()+6.0,rect.center().y+y),Pos2::new(rect.right()-6.0,rect.center().y+y)],egui::Stroke::new(2.0,if response.hovered(){TEXT}else{MUTED}));}if response.drag_started(){ctx.send_viewport_cmd(ViewportCommand::StartDrag);}if response.clicked(){self.collapsed=true;ctx.send_viewport_cmd(ViewportCommand::InnerSize(Vec2::new(MINI,HEIGHT)));}for index in 0..self.config.items.len(){self.draw_item(ui,index);}let(rect,response)=ui.allocate_exact_size(Vec2::new(SETTINGS-2.0,HEIGHT-2.0),Sense::click());for offset in [-4.0, 0.0, 4.0] { ui.painter().circle_filled(rect.center()+Vec2::new(offset,0.0),1.2,if response.hovered(){TEXT}else{MUTED}); }if response.clicked()||response.secondary_clicked(){self.menu=Some(Menu::Settings(rect.left()));}}
             });
         });self.show_menu(ctx);ctx.request_repaint_after(Duration::from_millis(100));
     }
     fn on_exit(&mut self,_gl:Option<&eframe::glow::Context>){let _=config::save_position(&self.config.path,self.last_pos.x.round() as i32,self.last_pos.y.round() as i32);}
+}
+
+fn menu_button(ui: &mut egui::Ui, text: &str) -> egui::Response {
+    let width = ui.available_width();
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(width, 24.0), Sense::click());
+    ui.painter().rect_filled(rect, 0.0, if response.hovered() { HOVER } else { BG });
+    ui.painter().text(
+        rect.left_center() + Vec2::new(6.0, 0.0),
+        egui::Align2::LEFT_CENTER,
+        text,
+        FontId::proportional(11.0),
+        TEXT,
+    );
+    response
 }
 
 fn show_error(message:&str){let escaped=message.replace('\\',"\\\\").replace('"',"\\\"").replace('\n',"\\n");let script=format!("display alert \"PSX Launcher\" message \"{escaped}\" as critical");let _=Command::new("/usr/bin/osascript").args(["-e",&script]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn();}

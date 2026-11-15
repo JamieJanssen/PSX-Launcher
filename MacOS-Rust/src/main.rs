@@ -36,7 +36,7 @@ enum Event{Status(Vec<State>),Action(usize,bool,Result<(),String>)}
 
 struct LauncherApp{
     config:AppConfig,status:Vec<State>,locked:Vec<Option<Instant>>,busy:Vec<bool>,widths:Vec<f32>,expanded:f32,collapsed:bool,
-    menu_app_was_active:bool,menu_focus_requested:bool,menu_had_focus:bool,menu:Option<Menu>,tx:Sender<Event>,rx:Receiver<Event>,status_busy:bool,next_status:Instant,last_pos:Pos2,
+    menu_left_at:Option<Instant>,menu_app_was_active:bool,menu_focus_requested:bool,menu_had_focus:bool,menu:Option<Menu>,tx:Sender<Event>,rx:Receiver<Event>,status_busy:bool,next_status:Instant,last_pos:Pos2,
 }
 
 impl LauncherApp{
@@ -44,7 +44,7 @@ impl LauncherApp{
         let widths:Vec<_>=config.items.iter().map(|item|(52.0+item.label.chars().count() as f32*6.5).max(72.0)).collect();
         let expanded=HANDLE+SETTINGS+widths.iter().sum::<f32>()+2.0*widths.len().saturating_sub(1) as f32;
         let count=config.items.len(); let x=config.x as f32; let y=config.y as f32;
-        Self{config,status:vec![State::Off;count],locked:vec![None;count],busy:vec![false;count],widths,expanded,collapsed:false,menu_app_was_active:false,menu_focus_requested:false,menu_had_focus:false,menu:None,tx,rx,status_busy:false,next_status:Instant::now()+Duration::from_secs(2),last_pos:Pos2::new(x,y)}
+        Self{config,status:vec![State::Off;count],locked:vec![None;count],busy:vec![false;count],widths,expanded,collapsed:false,menu_left_at:None,menu_app_was_active:false,menu_focus_requested:false,menu_had_focus:false,menu:None,tx,rx,status_busy:false,next_status:Instant::now()+Duration::from_secs(2),last_pos:Pos2::new(x,y)}
     }
     fn process_events(&mut self){
         while let Ok(event)=self.rx.try_recv(){match event{
@@ -63,6 +63,21 @@ impl LauncherApp{
     fn show_menu(&mut self,ctx:&egui::Context){
         let Some(menu)=self.menu else{return;};let origin=ctx.input(|i|i.viewport().outer_rect.map(|r|r.min).unwrap_or(self.last_pos));
         let(x,size)=match menu{Menu::Item(_,x)=>(x,Vec2::new(112.0,32.0)),Menu::Settings(x)=>(x-188.0+SETTINGS,Vec2::new(188.0,94.0)),Menu::About(x)=>(x-70.0,Vec2::new(210.0,118.0))};
+        let button_rect = match menu {
+            Menu::Item(index, left) => Some(egui::Rect::from_min_size(
+                Pos2::new(left, 0.0), Vec2::new(self.widths[index], HEIGHT),
+            )),
+            Menu::Settings(left) => Some(egui::Rect::from_min_size(
+                Pos2::new(left, 0.0), Vec2::new(SETTINGS, HEIGHT),
+            )),
+            Menu::About(_) => None,
+        };
+        let over_button = ctx.input(|i| {
+            i.pointer.hover_pos().is_some_and(|pos| {
+                button_rect.is_some_and(|rect| rect.contains(pos))
+            })
+        });
+        let mut over_menu = false;
         let app_active = mac_app_is_active();
         let lost_app_focus = self.menu_app_was_active && !app_active;
         self.menu_app_was_active |= app_active;
@@ -78,6 +93,11 @@ impl LauncherApp{
                 popup.send_viewport_cmd(ViewportCommand::Focus);
                 self.menu_focus_requested = true;
             }
+            over_menu = popup.input(|i| {
+                i.pointer.hover_pos().is_some_and(|pos| {
+                    egui::Rect::from_min_size(Pos2::ZERO, size).contains(pos)
+                })
+            });
             let focused = popup.input(|i| i.viewport().focused);
             if focused == Some(true) {
                 self.menu_had_focus = true;
@@ -88,6 +108,17 @@ impl LauncherApp{
                 close = true;
             }
         });
+        if !matches!(menu, Menu::About(_)) {
+            if over_button || over_menu {
+                self.menu_left_at = None;
+            } else {
+                let left_at = self.menu_left_at.get_or_insert_with(Instant::now);
+                if left_at.elapsed() >= Duration::from_millis(250) {
+                    close = true;
+                }
+                ctx.request_repaint_after(Duration::from_millis(25));
+            }
+        }
         if let Some((index,quit))=action{self.action(index,quit);}if close{ctx.send_viewport_cmd_to(id,ViewportCommand::Close);self.menu=None;}
     }
 }
@@ -99,6 +130,7 @@ impl eframe::App for LauncherApp{
             self.menu = None;
         }
         if self.menu.is_none() {
+            self.menu_left_at = None;
             self.menu_app_was_active = false;
             self.menu_focus_requested = false;
             self.menu_had_focus = false;

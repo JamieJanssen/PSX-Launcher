@@ -5,13 +5,28 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::io;
 use std::thread;
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 const GENERIC_IDS: [&str; 3] = ["org.pythonmac.unspecified", "org.python.python", "com.apple.scripteditor.id"];
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct Snapshot {
     visibility: HashMap<String, bool>,
     commands: Vec<String>,
+}
+
+// Only the background status collector refreshes this cache. Never hold its
+// mutex while invoking external commands or launching an application.
+static LAST_SNAPSHOT: OnceLock<Mutex<Arc<Snapshot>>> = OnceLock::new();
+static PENDING_LAUNCHES: OnceLock<Mutex<HashMap<PathBuf, Instant>>> = OnceLock::new();
+
+fn snapshot_cache() -> &'static Mutex<Arc<Snapshot>> {
+    LAST_SNAPSHOT.get_or_init(|| Mutex::new(Arc::new(Snapshot::default())))
+}
+
+fn pending_launches() -> &'static Mutex<HashMap<PathBuf, Instant>> {
+    PENDING_LAUNCHES.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 pub fn snapshot() -> Snapshot {
@@ -30,6 +45,7 @@ pub fn snapshot() -> Snapshot {
     if let Ok(output)=Command::new("/usr/bin/nice").args(["-n","15","/bin/ps","-axo","command="]).output() {
         if output.status.success() { result.commands=String::from_utf8_lossy(&output.stdout).lines().map(str::trim).filter(|v|!v.is_empty()).map(str::to_string).collect(); }
     }
+    *snapshot_cache().lock().unwrap_or_else(|e| e.into_inner()) = Arc::new(result.clone());
     result
 }
 
@@ -70,21 +86,41 @@ pub fn item_state(item:&LauncherItem,snapshot:&Snapshot)->(bool,bool) {
 
 pub fn launch_item(item:&LauncherItem)->Result<(),String> {
     if item.targets.is_empty() { return Err("Nothing has been configured for this button.".into()); }
-    let current=snapshot(); let mut errors=Vec::new();
+    let current = Arc::clone(&snapshot_cache().lock().unwrap_or_else(|e| e.into_inner()));
+    let mut errors=Vec::new();
     for target in &item.targets {
         if !target.path.exists() { errors.push(format!("Not found: {}",target.path.display())); continue; }
         if is_running(target,&current) { continue; }
+        let path_key = target.path.canonicalize().unwrap_or_else(|_| target.path.clone());
+        {
+            let mut pending = pending_launches().lock().unwrap_or_else(|e| e.into_inner());
+            let now = Instant::now();
+            pending.retain(|_, until| *until > now);
+            if pending.contains_key(&path_key) { continue; }
+            pending.insert(path_key.clone(), now + Duration::from_secs(12));
+        }
         let result=if target.path.extension().and_then(|v|v.to_str()).map(|v|v.eq_ignore_ascii_case("app")).unwrap_or(false)||!target.hidden {
             spawn_reaped(Command::new("/usr/bin/open").arg(&target.path).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()))
         } else {
             let mut command=Command::new(&target.path); spawn_reaped(command.current_dir(target.path.parent().unwrap_or(Path::new("/"))).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()))
         };
-        if let Err(error)=result { errors.push(format!("Cannot launch {}: {error}",target.path.display())); }
+        if let Err(error)=result {
+            pending_launches().lock().unwrap_or_else(|e| e.into_inner()).remove(&path_key);
+            errors.push(format!("Cannot launch {}: {error}",target.path.display()));
+        }
     }
     if errors.is_empty(){Ok(())}else{Err(errors.join("\n\n"))}
 }
 
 pub fn quit_item(item:&LauncherItem)->Result<(),String> {
+    // Explicit Quit allows a later restart without waiting for the launch guard.
+    {
+        let mut pending = pending_launches().lock().unwrap_or_else(|e| e.into_inner());
+        for target in &item.targets {
+            let key = target.path.canonicalize().unwrap_or_else(|_| target.path.clone());
+            pending.remove(&key);
+        }
+    }
     let mut errors=Vec::new();
     for target in &item.targets {
         if !target.path.exists(){continue;}

@@ -18,7 +18,7 @@ const VERSION:&str="2.0.0-alpha.1";
 const HEIGHT:f32=28.0;
 const HANDLE:f32=28.0;
 const SETTINGS:f32=28.0;
-const MINI:f32=68.0;
+const MINI:f32=54.0;
 const BG:Color32=Color32::from_rgb(0x17,0x19,0x1c);
 const PANEL:Color32=Color32::from_rgb(0x22,0x25,0x2a);
 const HOVER:Color32=Color32::from_rgb(0x2d,0x31,0x37);
@@ -41,7 +41,7 @@ struct LauncherApp{
 
 impl LauncherApp{
     fn new(config:AppConfig,tx:Sender<Event>,rx:Receiver<Event>)->Self{
-        let widths:Vec<_>=config.items.iter().map(|item|(52.0+item.label.chars().count() as f32*6.5).max(72.0)).collect();
+        let widths:Vec<_>=config.items.iter().map(|item|(38.0+item.label.chars().count() as f32*6.5).max(58.0)).collect();
         let expanded=HANDLE+SETTINGS+widths.iter().sum::<f32>()+2.0*widths.len().saturating_sub(1) as f32;
         let count=config.items.len(); let x=config.x as f32; let y=config.y as f32;
         Self{config,status:vec![State::Off;count],locked:vec![None;count],busy:vec![false;count],widths,expanded,collapsed:false,menu_left_at:None,menu_app_was_active:false,menu_focus_requested:false,menu_had_focus:false,menu:None,tx,rx,status_busy:false,next_status:Instant::now()+Duration::from_secs(2),last_pos:Pos2::new(x,y)}
@@ -195,7 +195,7 @@ fn main()->eframe::Result{
     let lock_path=config.path.with_file_name("rust-launcher.lock");
     let lock=match File::create(lock_path){Ok(file)=>file,Err(error)=>{show_error(&format!("Cannot create the single-instance lock:\n\n{error}"));return Ok(());}};
     if lock.try_lock_exclusive().is_err(){show_error("PSX Launcher is already running.");return Ok(());}
-    let(tx,rx)=mpsc::channel();let widths:Vec<_>=config.items.iter().map(|i|(52.0+i.label.chars().count() as f32*6.5).max(72.0)).collect();let width=HANDLE+SETTINGS+widths.iter().sum::<f32>()+2.0*widths.len().saturating_sub(1) as f32;
+    let(tx,rx)=mpsc::channel();let widths:Vec<_>=config.items.iter().map(|i|(38.0+i.label.chars().count() as f32*6.5).max(58.0)).collect();let width=HANDLE+SETTINGS+widths.iter().sum::<f32>()+2.0*widths.len().saturating_sub(1) as f32;
     let position=Pos2::new(config.x as f32,config.y as f32);let always=config.always_on_top;
     let options=eframe::NativeOptions{viewport:egui::ViewportBuilder::default().with_title("PSX Launcher").with_decorations(false).with_taskbar(false).with_resizable(false).with_inner_size([width,HEIGHT]).with_position(position).with_window_level(if always{egui::WindowLevel::AlwaysOnTop}else{egui::WindowLevel::Normal}),event_loop_builder:Some(Box::new(|builder|{builder.with_activation_policy(ActivationPolicy::Accessory).with_default_menu(false);})),..Default::default()};
     let result=eframe::run_native("PSX Launcher",options,Box::new(move|cc|{cc.egui_ctx.set_visuals(egui::Visuals::dark());Ok(Box::new(LauncherApp::new(config,tx,rx)))}));drop(lock);result

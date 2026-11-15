@@ -3,6 +3,8 @@ use plist::Value;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::io;
+use std::thread;
 
 const GENERIC_IDS: [&str; 3] = ["org.pythonmac.unspecified", "org.python.python", "com.apple.scripteditor.id"];
 
@@ -73,9 +75,9 @@ pub fn launch_item(item:&LauncherItem)->Result<(),String> {
         if !target.path.exists() { errors.push(format!("Not found: {}",target.path.display())); continue; }
         if is_running(target,&current) { continue; }
         let result=if target.path.extension().and_then(|v|v.to_str()).map(|v|v.eq_ignore_ascii_case("app")).unwrap_or(false)||!target.hidden {
-            Command::new("/usr/bin/open").arg(&target.path).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn()
+            spawn_reaped(Command::new("/usr/bin/open").arg(&target.path).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()))
         } else {
-            let mut command=Command::new(&target.path); command.current_dir(target.path.parent().unwrap_or(Path::new("/"))).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn()
+            let mut command=Command::new(&target.path); spawn_reaped(command.current_dir(target.path.parent().unwrap_or(Path::new("/"))).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()))
         };
         if let Err(error)=result { errors.push(format!("Cannot launch {}: {error}",target.path.display())); }
     }
@@ -120,4 +122,19 @@ fn terminate_exact(path:&Path) {
             if (command==target||command.starts_with(&(target.clone()+" ")))&&let Ok(pid)=pid.parse::<i32>() { unsafe{libc::kill(pid,libc::SIGTERM);} }
         }
     }
+}
+
+/// Keep ownership of each child until its exit status has been collected.
+/// Waiting is blocking in the OS, not polling, and never blocks the UI thread.
+pub fn spawn_reaped(command: &mut Command) -> io::Result<()> {
+    let mut child = command.spawn()?;
+    thread::spawn(move || {
+        loop {
+            match child.wait() {
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                _ => break,
+            }
+        }
+    });
+    Ok(())
 }

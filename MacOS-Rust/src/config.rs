@@ -138,7 +138,7 @@ pub fn save_position(path: &Path, x: i32, y: i32) -> io::Result<()> {
             let Some((key,_))=clean.split_once('=') else { continue; };
             let ending=if line.ends_with("\r\n") {"\r\n"} else if line.ends_with('\n') {"\n"} else {newline};
             if key.trim().eq_ignore_ascii_case("x") { *line=format!("x = {x}{ending}"); found_x=true; }
-            if key.trim().eq_ignore_ascii_case("y") { *line=format!("y = {y}{ending}"); found_y=true; }
+            else if key.trim().eq_ignore_ascii_case("y") { *line=format!("y = {y}{ending}"); found_y=true; }
         }
         let mut additions=Vec::new();
         if !found_x { additions.push(format!("x = {x}{newline}")); }

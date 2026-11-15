@@ -4,8 +4,8 @@ compile_error!("PSX Launcher Rust for macOS can only be built on macOS.");
 mod config;
 mod processes;
 
-use config::{AppConfig, LauncherItem};
-use eframe::egui::{self, Color32, FontId, Pos2, Rect, Sense, Vec2, ViewportCommand, ViewportId};
+use config::AppConfig;
+use eframe::egui::{self, Color32, FontId, Pos2, Sense, Vec2, ViewportCommand, ViewportId};
 use fs2::FileExt;
 use std::fs::File;
 use std::process::{Command, Stdio};
@@ -69,7 +69,12 @@ impl LauncherApp{
                 Menu::Item(index,_)=>{if ui.button("Quit apps").clicked(){action=Some((index,true));close=true;}},
                 Menu::Settings(_)=>{if ui.button("Edit INI").clicked(){let _=Command::new("/usr/bin/open").arg(&self.config.path).spawn();close=true;}if ui.button(format!("About ({VERSION})")).clicked(){self.menu=Some(Menu::About(x));}if ui.button("Quit").clicked(){popup.send_viewport_cmd(ViewportCommand::Close);ctx.send_viewport_cmd(ViewportCommand::Close);}},
                 Menu::About(_)=>{ui.vertical_centered(|ui|{ui.label(egui::RichText::new("PSX Launcher").color(TEXT).strong());ui.label(egui::RichText::new(format!("Version {VERSION}")).color(MUTED));if ui.button("Close").clicked(){close=true;}});}
-            });if popup.input(|i|i.viewport().close_requested()){close=true;}});
+            }
+            });
+            if popup.input(|i| i.viewport().close_requested()) {
+                close = true;
+            }
+        });
         if let Some((index,quit))=action{self.action(index,quit);}if close{ctx.send_viewport_cmd_to(id,ViewportCommand::Close);self.menu=None;}
     }
 }

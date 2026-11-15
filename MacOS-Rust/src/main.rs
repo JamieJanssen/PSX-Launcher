@@ -85,7 +85,7 @@ impl LauncherApp{
         ctx.show_viewport_immediate(id,egui::ViewportBuilder::default().with_title("PSX Launcher").with_decorations(false).with_always_on_top().with_taskbar(false).with_resizable(false).with_inner_size(size).with_position(origin+Vec2::new(x,HEIGHT)),|popup,_|{
             egui::CentralPanel::default().frame(egui::Frame::NONE.fill(BG).inner_margin(egui::Margin::same(5))).show(popup,|ui|{match menu{
                 Menu::Item(index,_)=>{if menu_button(ui, "Quit apps").clicked(){action=Some((index,true));close=true;}},
-                Menu::Settings(_)=>{if menu_button(ui, "Edit INI").clicked(){let _=Command::new("/usr/bin/open").arg(&self.config.path).spawn();close=true;}if menu_button(ui, &format!("About ({VERSION})")).clicked(){self.menu=Some(Menu::About(x));}if menu_button(ui, "Quit").clicked(){close = true;popup.send_viewport_cmd_to(ViewportId::ROOT, ViewportCommand::Close);}},
+                Menu::Settings(_)=>{if menu_button(ui, "Edit INI").clicked(){let _=processes::spawn_reaped(Command::new("/usr/bin/open").arg(&self.config.path));close=true;}if menu_button(ui, &format!("About ({VERSION})")).clicked(){self.menu=Some(Menu::About(x));}if menu_button(ui, "Quit").clicked(){close = true;popup.send_viewport_cmd_to(ViewportId::ROOT, ViewportCommand::Close);}},
                 Menu::About(_)=>{ui.vertical_centered(|ui|{ui.label(egui::RichText::new("PSX Launcher").color(TEXT).strong());ui.label(egui::RichText::new(format!("Version {VERSION}")).color(MUTED));if menu_button(ui, "Close").clicked(){close=true;}});}
             }
             });
@@ -188,7 +188,7 @@ fn menu_button(ui: &mut egui::Ui, text: &str) -> egui::Response {
     response
 }
 
-fn show_error(message:&str){let escaped=message.replace('\\',"\\\\").replace('"',"\\\"").replace('\n',"\\n");let script=format!("display alert \"PSX Launcher\" message \"{escaped}\" as critical");let _=Command::new("/usr/bin/osascript").args(["-e",&script]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn();}
+fn show_error(message:&str){let escaped=message.replace('\\',"\\\\").replace('"',"\\\"").replace('\n',"\\n");let script=format!("display alert \"PSX Launcher\" message \"{escaped}\" as critical");let _=processes::spawn_reaped(Command::new("/usr/bin/osascript").args(["-e",&script]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()));}
 
 fn main()->eframe::Result{
     let config=match config::load(){Ok(v)=>v,Err(e)=>{show_error(&e);return Ok(());}};

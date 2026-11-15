@@ -36,7 +36,7 @@ enum Event{Status(Vec<State>),Action(usize,bool,Result<(),String>)}
 
 struct LauncherApp{
     config:AppConfig,status:Vec<State>,locked:Vec<Option<Instant>>,busy:Vec<bool>,widths:Vec<f32>,expanded:f32,collapsed:bool,
-    menu_focus_requested:bool,menu_had_focus:bool,menu:Option<Menu>,tx:Sender<Event>,rx:Receiver<Event>,status_busy:bool,next_status:Instant,last_pos:Pos2,
+    menu_app_was_active:bool,menu_focus_requested:bool,menu_had_focus:bool,menu:Option<Menu>,tx:Sender<Event>,rx:Receiver<Event>,status_busy:bool,next_status:Instant,last_pos:Pos2,
 }
 
 impl LauncherApp{
@@ -44,7 +44,7 @@ impl LauncherApp{
         let widths:Vec<_>=config.items.iter().map(|item|(52.0+item.label.chars().count() as f32*6.5).max(72.0)).collect();
         let expanded=HANDLE+SETTINGS+widths.iter().sum::<f32>()+2.0*widths.len().saturating_sub(1) as f32;
         let count=config.items.len(); let x=config.x as f32; let y=config.y as f32;
-        Self{config,status:vec![State::Off;count],locked:vec![None;count],busy:vec![false;count],widths,expanded,collapsed:false,menu_focus_requested:false,menu_had_focus:false,menu:None,tx,rx,status_busy:false,next_status:Instant::now()+Duration::from_secs(2),last_pos:Pos2::new(x,y)}
+        Self{config,status:vec![State::Off;count],locked:vec![None;count],busy:vec![false;count],widths,expanded,collapsed:false,menu_app_was_active:false,menu_focus_requested:false,menu_had_focus:false,menu:None,tx,rx,status_busy:false,next_status:Instant::now()+Duration::from_secs(2),last_pos:Pos2::new(x,y)}
     }
     fn process_events(&mut self){
         while let Ok(event)=self.rx.try_recv(){match event{
@@ -63,7 +63,10 @@ impl LauncherApp{
     fn show_menu(&mut self,ctx:&egui::Context){
         let Some(menu)=self.menu else{return;};let origin=ctx.input(|i|i.viewport().outer_rect.map(|r|r.min).unwrap_or(self.last_pos));
         let(x,size)=match menu{Menu::Item(_,x)=>(x,Vec2::new(112.0,32.0)),Menu::Settings(x)=>(x-188.0+SETTINGS,Vec2::new(188.0,94.0)),Menu::About(x)=>(x-70.0,Vec2::new(210.0,118.0))};
-        let mut close=false;let mut action=None;let id=ViewportId::from_hash_of("psx-launcher-popup");
+        let app_active = mac_app_is_active();
+        let lost_app_focus = self.menu_app_was_active && !app_active;
+        self.menu_app_was_active |= app_active;
+        let mut close=lost_app_focus;let mut action=None;let id=ViewportId::from_hash_of("psx-launcher-popup");
         ctx.show_viewport_immediate(id,egui::ViewportBuilder::default().with_title("PSX Launcher").with_decorations(false).with_always_on_top().with_taskbar(false).with_resizable(false).with_inner_size(size).with_position(origin+Vec2::new(x,HEIGHT)),|popup,_|{
             egui::CentralPanel::default().frame(egui::Frame::NONE.fill(BG).inner_margin(egui::Margin::same(5))).show(popup,|ui|{match menu{
                 Menu::Item(index,_)=>{if menu_button(ui, "Quit apps").clicked(){action=Some((index,true));close=true;}},
@@ -96,6 +99,7 @@ impl eframe::App for LauncherApp{
             self.menu = None;
         }
         if self.menu.is_none() {
+            self.menu_app_was_active = false;
             self.menu_focus_requested = false;
             self.menu_had_focus = false;
         }
@@ -109,6 +113,33 @@ impl eframe::App for LauncherApp{
         });self.show_menu(ctx);ctx.request_repaint_after(Duration::from_millis(100));
     }
     fn on_exit(&mut self,_gl:Option<&eframe::glow::Context>){let _=config::save_position(&self.config.path,self.last_pos.x.round() as i32,self.last_pos.y.round() as i32);}
+}
+
+// AppKit activation is independent of accessory popup window focus events.
+#[link(name = "objc")]
+unsafe extern "C" {
+    fn objc_getClass(name: *const std::ffi::c_char) -> *mut std::ffi::c_void;
+    fn sel_registerName(name: *const std::ffi::c_char) -> *mut std::ffi::c_void;
+    fn objc_msgSend();
+}
+
+fn mac_app_is_active() -> bool {
+    // Called only on eframe's main/UI thread. Both selectors are argument-free.
+    unsafe {
+        let class = objc_getClass(c"NSApplication".as_ptr());
+        if class.is_null() { return false; }
+        let shared = sel_registerName(c"sharedApplication".as_ptr());
+        let send_object: unsafe extern "C" fn(
+            *mut std::ffi::c_void, *mut std::ffi::c_void,
+        ) -> *mut std::ffi::c_void = std::mem::transmute(objc_msgSend as *const ());
+        let app = send_object(class, shared);
+        if app.is_null() { return false; }
+        let active = sel_registerName(c"isActive".as_ptr());
+        let send_bool: unsafe extern "C" fn(
+            *mut std::ffi::c_void, *mut std::ffi::c_void,
+        ) -> i8 = std::mem::transmute(objc_msgSend as *const ());
+        send_bool(app, active) != 0
+    }
 }
 
 fn menu_button(ui: &mut egui::Ui, text: &str) -> egui::Response {

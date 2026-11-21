@@ -31,3 +31,26 @@ The working INI remains compatible with the Python launcher and is stored at:
 
 Version `2.0.0-alpha.1` must be built and tested on macOS before it can replace
 the stable Python release.
+
+## Menu bar mode
+
+The menu bar uses the repository's `psx.icns` with a small status badge.
+Click the hamburger to hide the full bar, without switching to compact mode.
+Dragging the hamburger still moves the launcher. Click the menu bar icon to
+restore the full bar at its saved position.
+
+- Green: every configured target in enabled sections is running.
+- Orange: at least one target runs, but the set is incomplete.
+- Gray: none are running, or the first status check has not finished.
+- Red: an application action failed.
+- Empty/disabled sections do not affect the aggregate status.
+
+Status collection continues in one non-overlapping background worker while
+hidden, at the existing five-second minimum interval. Starting applications
+still uses cached process information. The initial check starts after two seconds.
+
+The build converts `psx.icns` to an embedded PNG using macOS's built-in
+`/usr/bin/sips`; no additional image tools are required. No INI migration is
+needed. Windows and the Python launchers are unchanged.
+
+Run `cargo test` on macOS to test the badge aggregation rules.

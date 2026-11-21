@@ -9,6 +9,8 @@ fs2 = "0.4"
 libc = "0.2"
 plist = "1.7"
 winit = "0.30.9"
+tray-icon = { version = "=0.19.2", default-features = false }
+image = { version = "0.25", default-features = false, features = ["png"] }
 
 [profile.release]
 codegen-units = 1
